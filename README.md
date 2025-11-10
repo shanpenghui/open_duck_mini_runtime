@@ -1,5 +1,9 @@
 # Open Duck Mini Runtime
 
+```bash
+python /home/duck/open_duck_mini_runtime/scripts/v2_rl_walk_mujoco.py --onnx_model_path /home/duck/open_duck_mini_runtime/BEST_WALK_ONNX_2.onnx --duck_config_path /home/duck/open_duck_mini_runtime/duck_config.json --action_scale 0.22
+```
+
 ## Raspberry Pi zero 2W setup
 
 ### Install Raspberry Pi OS
@@ -172,4 +176,5 @@ Download the [latest policy checkpoint ](https://github.com/apirrone/Open_Duck_M
 - Y to turn on/off head control (very experimental, I don't recommend trying that, it can break your duck's head)
 - left and right triggers to control the left and right antennas
 - LB (new!) press and hold to increase the walking frequency, kind of a sprint mode 🙂
+
 ```
