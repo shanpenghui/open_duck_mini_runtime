@@ -161,7 +161,7 @@ if __name__ == "__main__":
     while True:
         data = imu.get_data()
         # print(data)
-        print("gyro", np.around(data["gyro"], 3))
-        print("accelero", np.around(data["accelero"], 3))
-        print("---")
-        time.sleep(1 / 25)
+        print("gyro", np.around(np.degrees(data["gyro"]), 2))
+        # print("accelero", np.around(data["accelero"], 3))
+        # print("---")
+        time.sleep(5 / 25)

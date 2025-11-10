@@ -2,20 +2,7 @@ from pypot.feetech import FeetechSTS3215IO
 import argparse
 import time
 
-DEFAULT_ID = 11  # A brand new motor should have id 1
-
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--port",
-    help="The port the motor is connected to. Default is /dev/ttyACM0. Use `ls /dev/tty* | grep usb` to find the port.",
-    default="/dev/ttyACM0",
-)
-parser.add_argument("--id", help="The id to set to the motor.", type=str, required=True)
-args = parser.parse_args()
-io = FeetechSTS3215IO(args.port)
-
-current_id = DEFAULT_ID
-
+DEFAULT_ID = 1  # A brand new motor should have id 1
 
 joints = {
     "left_hip_yaw": 20,
@@ -27,12 +14,28 @@ joints = {
     "head_pitch": 31,
     "head_yaw": 32,
     "head_roll": 33,
+    # "left_antenna": None,
+    # "right_antenna": None,
     "right_hip_yaw": 10,
     "right_hip_roll": 11,
     "right_hip_pitch": 12,
     "right_knee": 13,
     "right_ankle": 14,
 }
+
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--port",
+    help="The port the motor is connected to. Default is /dev/ttyACM0. Use `ls /dev/tty* | grep usb` to find the port.",
+    default="/dev/ttyACM0",
+)
+# parser.add_argument("--id", help="The id to set to the motor.", type=str, required=True)
+args = parser.parse_args()
+io = FeetechSTS3215IO(args.port)
+
+current_id = DEFAULT_ID
+
+
 def scan():
     id = None
     for i in range(255):
@@ -47,25 +50,16 @@ def scan():
             pass
     return id
 
-for id in joints.values():
-    print(f"Assigned value: {id}")
-    current_id = id
+# print("current id: ", current_id)
+for joint_name, joint_id in joints.items():
+    current_id = joint_id
     try:
-        io.get_present_position([DEFAULT_ID])
+        io.get_present_position([current_id])
     except Exception:
         print(
-            f"Could not find motor with default id ({DEFAULT_ID}). Scanning for motor ..."
+            f"Could not find motor with default id ({current_id})"
         )
-        res = scan()
-        if res is not None:
-            current_id = res
-        else:
-            print("Could not find motor. Exiting ...")
-            exit()
-
-
-    # print("current id: ", current_id)
-
+        exit()
     kp = io.get_P_coefficient([current_id])
     ki = io.get_I_coefficient([current_id])
     kd = io.get_D_coefficient([current_id])
@@ -85,9 +79,7 @@ for id in joints.values():
     io.set_P_coefficient({current_id: 32})
     io.set_I_coefficient({current_id: 0})
     io.set_D_coefficient({current_id: 0})
-    # io.change_id({current_id: int(args.id)})
 
-    # current_id = int(args.id)
 
     time.sleep(1)
 

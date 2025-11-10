@@ -125,7 +125,6 @@ class Imu:
 
             # gives scalar last, which is what isaac wants
             final_orientation_quat = R.from_euler("xyz", euler).as_quat()
-
             self.imu_queue.put(final_orientation_quat.copy())
             took = time.time() - s
             time.sleep(max(0, 1 / self.sampling_freq - took))
@@ -150,12 +149,14 @@ class Imu:
 
 
 if __name__ == "__main__":
-    imu = Imu(50, calibrate=True, upside_down=False)
+    imu = Imu(50, calibrate=False, upside_down=False)
     # imu = Imu(50, upside_down=False)
     while True:
         data = imu.get_data()
         # print(data)
-        print("gyro", np.around(data["gyro"], 3))
-        print("accelero", np.around(data["accelero"], 3))
+        gyro_deg = np.degrees(data["gyro"])
+        # print("[IMU] gyro_deg:", gyro_deg)
+        # print("gyro", np.around(data["gyro"], 3))
+        # print("accelero", np.around(data["accelero"], 3))
         print("---")
         time.sleep(1 / 25)

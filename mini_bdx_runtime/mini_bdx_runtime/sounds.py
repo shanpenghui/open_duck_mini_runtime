@@ -50,7 +50,7 @@ class Sounds:
 
 # Example usage
 if __name__ == "__main__":
-    sound_player = Sounds(1.0, "../assets/")
+    sound_player = Sounds(1.0, "/home/duck/Open_Duck_Mini_Runtime/mini_bdx_runtime/assets/")
     time.sleep(1)
     while True:
         # sound_player.play_random_sound()

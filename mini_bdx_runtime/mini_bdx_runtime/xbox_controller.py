@@ -5,6 +5,8 @@ import time
 import numpy as np
 from mini_bdx_runtime.buttons import Buttons
 
+def apply_deadzone(val, threshold=0.25):
+    return 0.0 if abs(val) < threshold else val
 
 X_RANGE = [-0.15, 0.15]
 Y_RANGE = [-0.2, 0.2]
@@ -52,14 +54,38 @@ class XBoxController:
         last_commands = self.last_commands
         left_trigger = self.last_left_trigger
         right_trigger = self.last_right_trigger
+        # if not hasattr(self, "_print_count"):
+        #     self._print_count = 0
+        # if self._print_count < 10:
+        #     print("[DEBUG] Axis values:")
+        #     for axis_id in range(self.p1.get_numaxes()):
+        #         val = self.p1.get_axis(axis_id)
+        #         print(f"    Axis {axis_id}: {val:.3f}")
+        #     self._print_count += 1
 
-        l_x = -1 * self.p1.get_axis(0)
-        l_y = -1 * self.p1.get_axis(1)
-        r_x = -1 * self.p1.get_axis(2)
-        r_y = -1 * self.p1.get_axis(3)
+        # ✅ 按照你的实际测试重新定义轴映射：
+        # 左摇杆：axis0 左右（左负右正），axis1 前后（前负后正）
+        # 右摇杆 X（Yaw 控制）：axis3 左负右正
+        # LT（左扳机）：axis2，范围 -1（松）到 1（按下）
+        # ⚠️ 右扳机未定义，这里设置为 0.0，等你补全
+        # 打印全部6个轴的原始值，用于确认手柄各个控制轴
+        # axis_values = [self.p1.get_axis(i) for i in range(self.p1.get_numaxes())]
+        # print("[Joystick Axis Values]", ", ".join([f"A{i}: {v:+.3f}" for i, v in enumerate(axis_values)]))
 
-        right_trigger = np.around((self.p1.get_axis(4) + 1) / 2, 3)
-        left_trigger = np.around((self.p1.get_axis(5) + 1) / 2, 3)
+        l_x = apply_deadzone(-1 * self.p1.get_axis(0))  # 左摇杆左右
+        l_y = apply_deadzone(-1 * self.p1.get_axis(1))  # 左摇杆前后，前为正
+        # 假设 r_x 使用 axis 3（你可根据打印结果确认）
+        r_x_raw = self.p1.get_axis(3)
+        r_x = apply_deadzone(-1 * r_x_raw)
+
+        # 打印 r_x 处理前后的值
+        # print(f"[r_x] Raw: {r_x_raw:+.3f}, After Deadzone & Flip: {r_x:+.3f}")
+
+        r_y = 0  #
+
+        # 扳机处理
+        # left_trigger = np.around((self.p1.get_axis(2) + 1) / 2, 3)
+        # right_trigger = 0.0  # 当前无效，可后续更新
 
         if left_trigger < 0.1:
             left_trigger = 0
@@ -119,7 +145,7 @@ class XBoxController:
 
         for event in pygame.event.get():
             if event.type == pygame.JOYBUTTONDOWN:
-
+                # print("[EVENT] JOYBUTTONDOWN received")
                 if self.p1.get_button(0):  # A button
                     self.A_pressed = True
 
@@ -131,6 +157,7 @@ class XBoxController:
 
                 if self.p1.get_button(4):  # Y button
                     self.Y_pressed = True
+                    # print("[BUTTON] Y pressed")
                     if not self.only_head_control:
                         self.head_control_mode = not self.head_control_mode
 
@@ -203,8 +230,9 @@ class XBoxController:
             RB_pressed,
             up_down == 1,
             up_down == -1,
-        )
+            )
 
+        # print(f"[INFO] Current mode: head_control_mode = {self.head_control_mode}")
         return (
             self.last_commands,
             self.buttons,

@@ -23,18 +23,18 @@ HOME_DIR = os.path.expanduser("~")
 
 class RLWalk:
     def __init__(
-        self,
-        onnx_model_path: str,
-        duck_config_path: str = f"{HOME_DIR}/duck_config.json",
-        serial_port: str = "/dev/ttyACM0",
-        control_freq: float = 50,
-        pid=[30, 0, 0],
-        action_scale=0.25,
-        commands=False,
-        pitch_bias=0,
-        save_obs=False,
-        replay_obs=None,
-        cutoff_frequency=None,
+            self,
+            onnx_model_path: str,
+            duck_config_path: str = f"{HOME_DIR}/duck_config.json",
+            serial_port: str = "/dev/ttyACM0",
+            control_freq: float = 50,
+            pid=[30, 0, 0],
+            action_scale=0.25,
+            commands=False,
+            pitch_bias=0,
+            save_obs=False,
+            replay_obs=None,
+            cutoff_frequency=None,
     ):
 
         self.duck_config = DuckConfig(config_json_path=duck_config_path)
@@ -67,6 +67,7 @@ class RLWalk:
             )
 
         self.hwi = HWI(self.duck_config, serial_port)
+        # print(f"[INFO] Joints in HWI: {list(self.hwi.joints.keys())}")
 
         self.start()
 
@@ -100,7 +101,7 @@ class RLWalk:
 
         # Reference motion, but we only really need the length of one phase
         # TODO
-        self.PRM = PolyReferenceMotion("./polynomial_coefficients.pkl")
+        self.PRM = PolyReferenceMotion("/home/duck/Open_Duck_Mini_Runtime/scripts/polynomial_coefficients.pkl")
         self.imitation_i = 0
         self.imitation_phase = np.array([0, 0])
         self.phase_frequency_factor = 1.0
@@ -123,6 +124,34 @@ class RLWalk:
     def get_obs(self):
 
         imu_data = self.imu.get_data()
+        gyro_deg = np.degrees(imu_data["gyro"])
+        # imu_data["gyro"][1] = imu_data["gyro"][1]*1.1
+        # print("[IMU] gyro_deg:", gyro_deg)
+        # 加限幅 & 异常值剔除
+        # 限幅过滤：加速度最大 ±10 m/s²，陀螺仪最大 ±5 rad/s
+        accel = np.clip(imu_data["accelero"], -10, 10)
+        gyro = np.clip(imu_data["gyro"], -5, 5)
+        # 简单离群值剔除：超过阈值认为是错误，直接用上一个值（需要保留）
+        if hasattr(self, "last_good_gyro"):
+            if np.any(np.abs(gyro - self.last_good_gyro) > 2.0):  # 限波动
+                gyro = self.last_good_gyro
+            else:
+                self.last_good_gyro = gyro.copy()
+        else:
+            self.last_good_gyro = gyro.copy()
+
+        if hasattr(self, "last_good_accel"):
+            if np.any(np.abs(accel) > 9.8):
+                accel = self.last_good_accel
+            else:
+                self.last_good_accel = accel.copy()
+        else:
+            self.last_good_accel = accel.copy()
+        # 替换原始数据
+        imu_data["gyro"] = gyro
+        imu_data["accelero"] = accel
+
+        # print(f"[IMU DEBUG] Gyro Z: {imu_data['gyro'][2]:.4f}, Accel X: {imu_data['accelero'][0]:.4f}")
 
         dof_pos = self.hwi.get_present_positions(
             ignore=[
@@ -166,7 +195,7 @@ class RLWalk:
                 self.motor_targets,
                 feet_contacts,
                 self.imitation_phase,
-            ]
+                ]
         )
 
         return obs
@@ -191,7 +220,7 @@ class RLWalk:
 
         # Perform linear interpolation
         freq = min_phase_frequency + (abs(x_velocity) / 0.15) * (
-            max_phase_frequency - min_phase_frequency
+                max_phase_frequency - min_phase_frequency
         )
 
         return freq
@@ -199,7 +228,7 @@ class RLWalk:
     def run(self):
         i = 0
         try:
-            print("Starting")
+            # print("Starting")
             start_t = time.time()
             while True:
                 left_trigger = 0
@@ -210,6 +239,16 @@ class RLWalk:
                     self.last_commands, self.buttons, left_trigger, right_trigger = (
                         self.xbox_controller.get_last_command()
                     )
+                    # if i % 20 == 0:
+                    #     print(f"[CMD] lin_x={self.last_commands[0]:.3f}, lin_y={self.last_commands[1]:.3f}, yaw={self.last_commands[2]:.3f}")
+
+                    # print(f"[Debug] Joystick raw command: {self.last_commands}")
+                    # print(f"[Debug] Trigger values: Left {left_trigger}, Right {right_trigger}")
+                    # print(f"[Debug] Buttons: A={self.buttons.A.is_pressed}, Dpad_Left={self.buttons.dpad_left.is_pressed}, Dpad_Right={self.buttons.dpad_right.is_pressed}, ...")
+                    # print(f"[RAW AXIS] axis0={self.xbox_controller.p1.get_axis(0):.3f}, axis1={self.xbox_controller.p1.get_axis(1):.3f}, axis2={self.xbox_controller.p1.get_axis(2):.3f}, axis3={self.xbox_controller.p1.get_axis(3):.3f}")
+                    # print(f"[CMD DEBUG] Joystick Angular Cmd (Yaw): {self.last_commands[2]:.4f}")
+
+
                     if self.buttons.dpad_up.triggered:
                         self.phase_frequency_factor_offset += 0.05
                         print(
@@ -251,11 +290,20 @@ class RLWalk:
                     continue
 
                 obs = self.get_obs()
+                if i % 50 == 0:
+                    gyro = obs[0:3]
+                    accel = obs[3:6]
+                    # print(f"[IMU] Gyro Z: {gyro[2]:.3f}, Accel X: {accel[0]:.3f}, Accel Y: {accel[1]:.3f}")
+
+                    left_foot = obs[-4]  # 默认是feet_contacts[0]
+                    right_foot = obs[-3] # 默认是feet_contacts[1]
+                    # print(f"[Contact] Left: {left_foot:.1f}, Right: {right_foot:.1f}")
+
                 if obs is None:
                     continue
 
                 self.imitation_i += 1 * (
-                    self.phase_frequency_factor + self.phase_frequency_factor_offset
+                        self.phase_frequency_factor + self.phase_frequency_factor_offset
                 )
                 self.imitation_i = self.imitation_i % self.PRM.nb_steps_in_period
                 self.imitation_phase = np.array(
@@ -279,7 +327,30 @@ class RLWalk:
                         print("BREAKING ")
                         break
 
+                # print(f"[OBS] yaw_cmd in obs[8]: {obs[8]:.3f}, should match yaw: {self.last_commands[2]:.3f}")
+
                 action = self.policy.infer(obs)
+                # if i % 20 == 0:
+                # print(f"[DEBUG][Step {i}] last_commands: {np.round(self.last_commands, 3)}")
+                # print(f"[DEBUG][Step {i}] Input Obs (yaw cmd): {obs[8]:.3f}")
+
+                # if i % 20 == 0:
+                #     print(f"[Action] {np.round(action, 3)}")
+
+                # 原地动作时加“策略抑制”
+                # if np.linalg.norm(self.last_commands[:2]) < 0.05:
+                #     action[:] = 0.0
+
+                # === 限幅死区抖动抑制 ===
+                # if np.abs(action).max() < 0.1:
+                #     action[:] = 0.0
+
+                # if i % 50 == 0:
+                #     print(f"[Action] Max: {np.max(action):.3f}, Min: {np.min(action):.3f}, Mean: {np.mean(action):.3f}")
+                #     print(f"[Action raw] {np.round(action, 3)}")  # 新增行
+
+                # if i % 50 == 0:
+                    # print(f"[Action] Max: {np.max(action):.3f}, Min: {np.min(action):.3f}, Mean: {np.mean(action):.3f}")
 
                 self.last_last_last_action = self.last_last_action.copy()
                 self.last_last_action = self.last_action.copy()
@@ -288,6 +359,9 @@ class RLWalk:
                 # action = np.zeros(10)
 
                 self.motor_targets = self.init_pos + action * self.action_scale
+                if i % 50 == 0:
+                    diff = self.motor_targets - self.prev_motor_targets
+                    # print(f"[MotorTargets] ΔMax: {np.max(diff):.3f}, ΔMean: {np.mean(diff):.3f}")
 
                 # self.motor_targets = np.clip(
                 #     self.motor_targets,
@@ -309,6 +383,7 @@ class RLWalk:
 
                 head_motor_targets = self.last_commands[3:] + self.motor_targets[5:9]
                 self.motor_targets[5:9] = head_motor_targets
+                # print(self.hwi.joints.keys())
 
                 action_dict = make_action_dict(
                     self.motor_targets, list(self.hwi.joints.keys())
