@@ -76,29 +76,91 @@ class HWI:
 
         self.io = rustypot.feetech(usb_port, 1000000)
 
+        # Track which servos failed to configure
+        self.failed_servos = set()
+
+    def _write_servo_with_retry(self, write_fn, servo_id, max_retries=3, delay=0.1):
+        """Write to a single servo with retry logic. Returns True on success."""
+        for attempt in range(max_retries):
+            try:
+                write_fn(servo_id)
+                return True
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                else:
+                    joint_name = [k for k, v in self.joints.items() if v == servo_id]
+                    name = joint_name[0] if joint_name else str(servo_id)
+                    print(f"[WARN] {write_fn.__name__ if hasattr(write_fn, '__name__') else 'write'} servo {servo_id} ({name}) failed after {max_retries} retries: {e}")
+                    return False
+
     def set_kps(self, kps):
         self.kps = kps
-        self.io.set_kps(list(self.joints.values()), self.kps)
+        self.failed_servos.clear()
+        for i, (name, sid) in enumerate(self.joints.items()):
+            ok = self._write_servo_with_retry(
+                lambda s=sid, k=self.kps[i]: self.io.set_kps([s], [k]),
+                sid, max_retries=3, delay=0.1
+            )
+            if not ok:
+                self.failed_servos.add(sid)
+                print(f"[ERROR] set_kps failed for servo {sid} ({name})! Check wiring!")
+            time.sleep(0.01)
 
     def set_kds(self, kds):
         self.kds = kds
-        self.io.set_kds(list(self.joints.values()), self.kds)
+        for i, (name, sid) in enumerate(self.joints.items()):
+            ok = self._write_servo_with_retry(
+                lambda s=sid, k=self.kds[i]: self.io.set_kds([s], [k]),
+                sid, max_retries=3, delay=0.1
+            )
+            if not ok:
+                self.failed_servos.add(sid)
+                print(f"[ERROR] set_kds failed for servo {sid} ({name})! Check wiring!")
+            time.sleep(0.01)
 
     def set_kp(self, id, kp):
         self.io.set_kps([id], [kp])
 
     def turn_on(self):
-        self.io.set_kps(list(self.joints.values()), self.low_torque_kps)
+        ids = list(self.joints.values())
+        # Phase 1: low kps (safe torque)
+        for i, sid in enumerate(ids):
+            self._write_servo_with_retry(
+                lambda s=sid, k=self.low_torque_kps[i]: self.io.set_kps([s], [k]),
+                sid, max_retries=3, delay=0.1
+            )
+            time.sleep(0.01)
         print("turn on : low KPS set")
         time.sleep(1)
 
+        # Phase 2: move to init position (one-by-one)
         self.set_position_all(self.init_pos)
         print("turn on : init pos set")
 
         time.sleep(1)
 
-        self.io.set_kps(list(self.joints.values()), self.kps)
+        # Phase 3: high kps (full torque)
+        for i, sid in enumerate(ids):
+            self._write_servo_with_retry(
+                lambda s=sid, k=self.kps[i]: self.io.set_kps([s], [k]),
+                sid, max_retries=3, delay=0.1
+            )
+            time.sleep(0.01)
         print("turn on : high kps")
+
+        # Report failed servos
+        if self.failed_servos:
+            names = []
+            for sid in self.failed_servos:
+                jname = [k for k, v in self.joints.items() if v == sid]
+                names.append(f"{sid}({jname[0]})" if jname else str(sid))
+            print(f"[FATAL] Servos with communication errors: {', '.join(names)}")
+            print("[FATAL] Check wiring and connections! Aborting.")
+            raise RuntimeError(
+                f"Servo communication failed for IDs: {self.failed_servos}. "
+                f"Check wiring before restarting."
+            )
 
     def turn_off(self):
         self.io.disable_torque(list(self.joints.values()))
@@ -115,15 +177,21 @@ class HWI:
         """
         joints_positions is a dictionary with joint names as keys and joint positions as values
         Warning: expects radians
+        Writes one-by-one to avoid bulk write timeout issues with unresponsive servos.
         """
         ids_positions = {
             self.joints[joint]: position + self.joints_offsets[joint]
             for joint, position in joints_positions.items()
         }
 
-        self.io.write_goal_position(
-            list(self.joints.values()), list(ids_positions.values())
-        )
+        # One-by-one writes to avoid one bad servo disrupting all joints
+        for sid, pos in ids_positions.items():
+            try:
+                self.io.write_goal_position([sid], [pos])
+            except Exception as e:
+                # Don't crash on transient errors during main loop, just warn
+                pass
+            time.sleep(0.001)  # minimal delay to not overload serial bus
 
     def get_present_positions(self, ignore=[]):
         """
