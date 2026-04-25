@@ -20,6 +20,16 @@ import os
 
 HOME_DIR = os.path.expanduser("~")
 
+# Auto-detect the runtime directory (wherever this repo is cloned)
+# Walk up from this script to find the repo root
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_DIR = os.path.dirname(_SCRIPT_DIR)  # scripts/ -> repo root
+
+# For headless environments (RPi without display), SDL must use dummy drivers
+# This prevents pygame.init() from hanging when no display is available
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
 
 class RLWalk:
     def __init__(
@@ -35,6 +45,7 @@ class RLWalk:
             save_obs=False,
             replay_obs=None,
             cutoff_frequency=None,
+            min_motor_voltage=6.8,
     ):
 
         self.duck_config = DuckConfig(config_json_path=duck_config_path)
@@ -81,6 +92,8 @@ class RLWalk:
 
         # Scales
         self.action_scale = action_scale
+        self.min_motor_voltage = min_motor_voltage
+        self.voltage_check_interval = max(1, int(self.control_freq))
 
         self.last_action = np.zeros(self.num_dofs)
         self.last_last_action = np.zeros(self.num_dofs)
@@ -101,7 +114,7 @@ class RLWalk:
 
         # Reference motion, but we only really need the length of one phase
         # TODO
-        self.PRM = PolyReferenceMotion("/home/duck/Open_Duck_Mini_Runtime/scripts/polynomial_coefficients.pkl")
+        self.PRM = PolyReferenceMotion(os.path.join(REPO_DIR, "scripts", "polynomial_coefficients.pkl"))
         self.imitation_i = 0
         self.imitation_phase = np.array([0, 0])
         self.phase_frequency_factor = 1.0
@@ -116,7 +129,7 @@ class RLWalk:
             self.projector = Projector()
         if self.duck_config.speaker:
             self.sounds = Sounds(
-                volume=1.0, sound_directory="../mini_bdx_runtime/assets/"
+                volume=2.0, sound_directory=os.path.join(REPO_DIR, "mini_bdx_runtime", "assets/")
             )
         if self.duck_config.antennas:
             self.antennas = Antennas()
@@ -213,6 +226,27 @@ class RLWalk:
 
         time.sleep(2)
 
+    def check_motor_voltage(self):
+        voltages = self.hwi.get_present_voltages()
+        if voltages is None or len(voltages) == 0:
+            return True
+
+        min_voltage = float(np.min(voltages))
+        if min_voltage < self.min_motor_voltage:
+            print(
+                f"[FATAL] Motor bus voltage too low: {min_voltage:.2f}V "
+                f"(threshold {self.min_motor_voltage:.2f}V). Turning off torque."
+            )
+            self.hwi.turn_off()
+            return False
+
+        if min_voltage < self.min_motor_voltage + 0.3:
+            print(
+                f"[WARN] Motor bus voltage is low: {min_voltage:.2f}V "
+                f"(threshold {self.min_motor_voltage:.2f}V)"
+            )
+        return True
+
     def get_phase_frequency_factor(self, x_velocity):
 
         max_phase_frequency = 1.2
@@ -285,11 +319,18 @@ class RLWalk:
                         else:
                             print("UNPAUSE")
 
+                if i % self.voltage_check_interval == 0:
+                    if not self.check_motor_voltage():
+                        break
+
                 if self.paused:
                     time.sleep(0.1)
                     continue
 
                 obs = self.get_obs()
+                if obs is None:
+                    continue
+
                 if i % 50 == 0:
                     gyro = obs[0:3]
                     accel = obs[3:6]
@@ -298,9 +339,6 @@ class RLWalk:
                     left_foot = obs[-4]  # 默认是feet_contacts[0]
                     right_foot = obs[-3] # 默认是feet_contacts[1]
                     # print(f"[Contact] Left: {left_foot:.1f}, Right: {right_foot:.1f}")
-
-                if obs is None:
-                    continue
 
                 self.imitation_i += 1 * (
                         self.phase_frequency_factor + self.phase_frequency_factor_offset
@@ -405,6 +443,8 @@ class RLWalk:
         except KeyboardInterrupt:
             if self.duck_config.antennas:
                 self.antennas.stop()
+        finally:
+            self.hwi.turn_off()
 
         if self.save_obs:
             pickle.dump(self.saved_obs, open("robot_saved_obs.pkl", "wb"))
@@ -422,8 +462,8 @@ if __name__ == "__main__":
         required=False,
         default=f"{HOME_DIR}/duck_config.json",
     )
-    parser.add_argument("-a", "--action_scale", type=float, default=0.25)
-    parser.add_argument("-p", type=int, default=30)
+    parser.add_argument("-a", "--action_scale", type=float, default=0.2)
+    parser.add_argument("-p", type=int, default=22)
     parser.add_argument("-i", type=int, default=0)
     parser.add_argument("-d", type=int, default=0)
     parser.add_argument("-c", "--control_freq", type=int, default=50)
@@ -433,6 +473,12 @@ if __name__ == "__main__":
         action="store_true",
         default=True,
         help="external commands, keyboard or gamepad. Launch control_server.py on host computer",
+    )
+    parser.add_argument(
+        "--no-commands",
+        action="store_false",
+        dest="commands",
+        help="disable gamepad commands, useful for headless startup checks",
     )
     parser.add_argument(
         "--save_obs",
@@ -449,6 +495,7 @@ if __name__ == "__main__":
         help="replay the observations from a previous run (can be from the robot or from mujoco)",
     )
     parser.add_argument("--cutoff_frequency", type=float, default=None)
+    parser.add_argument("--min_motor_voltage", type=float, default=6.8)
 
     args = parser.parse_args()
     pid = [args.p, args.i, args.d]
@@ -465,6 +512,7 @@ if __name__ == "__main__":
         save_obs=args.save_obs,
         replay_obs=args.replay_obs,
         cutoff_frequency=args.cutoff_frequency,
+        min_motor_voltage=args.min_motor_voltage,
     )
     print("Done instantiating RLWalk")
     rl_walk.run()

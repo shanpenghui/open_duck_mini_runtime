@@ -1,9 +1,5 @@
 # Open Duck Mini Runtime
 
-```bash
-python /home/duck/open_duck_mini_runtime/scripts/v2_rl_walk_mujoco.py --onnx_model_path /home/duck/open_duck_mini_runtime/BEST_WALK_ONNX_2.onnx --duck_config_path /home/duck/open_duck_mini_runtime/duck_config.json --action_scale 0.22
-```
-
 ## Raspberry Pi zero 2W setup
 
 ### Install Raspberry Pi OS
@@ -162,9 +158,114 @@ python find_soft_offsets.py
 
 Download the [latest policy checkpoint ](https://github.com/apirrone/Open_Duck_Mini/blob/v2/BEST_WALK_ONNX_2.onnx) and copy it to your duck.
 
-`cd scripts/`
+### Deployment workflow
 
-`python v2_rl_walk_mujoco.py --onnx_model_path <path_to>/BEST_WALK_ONNX_2.onnx`
+The intended workflow is local development on Windows and remote execution on the duck:
+
+1. Edit code locally in `D:\open_duck_mini_runtime`.
+2. Sync the local checkout to `duck@192.168.0.34:/home/duck/open_duck_mini_runtime`.
+3. Build, run, and inspect logs on the duck.
+4. Commit and push the local branch to GitHub when the remote run is verified.
+
+### Local Windows setup
+
+```powershell
+cd D:\open_duck_mini_runtime
+python -m pip install -r requirements.txt
+```
+
+The deployment helper prompts for the SSH password when `DUCK_PASSWORD` is not set. For one shell session only, you can also set it as an environment variable.
+
+```powershell
+$env:DUCK_HOST="192.168.0.34"
+$env:DUCK_USER="duck"
+python scripts\duck_remote.py check
+```
+
+### Remote duck setup
+
+Run this on the duck after cloning or syncing the repository:
+
+```bash
+cd ~/open_duck_mini_runtime
+python3 -m venv ~/.venv
+~/.venv/bin/python -m pip install --upgrade pip
+~/.venv/bin/python -m pip install -r requirements.txt
+~/.venv/bin/python -m pip install -e . --no-deps
+```
+
+If the duck cannot reach PyPI reliably, download the matching `rustypot==1.4.2` wheel on a machine with internet access and install it on the duck before installing the project:
+
+```bash
+~/.venv/bin/python -m pip install /tmp/rustypot-1.4.2-cp313-cp313-manylinux_2_24_aarch64.whl
+~/.venv/bin/python -m pip install -e . --no-deps
+```
+
+### Remote commands from Windows
+
+Check hardware and current logs:
+
+```powershell
+python scripts\duck_remote.py check
+python scripts\duck_remote.py status
+```
+
+Sync only:
+
+```powershell
+python scripts\duck_remote.py sync
+```
+
+Start with the conservative default profile:
+
+```powershell
+python scripts\duck_remote.py start
+```
+
+This expands to:
+
+```bash
+/home/duck/.venv/bin/python -u scripts/v2_rl_walk_mujoco.py \
+  --onnx_model_path BEST_WALK_ONNX_2.onnx \
+  --duck_config_path /home/duck/open_duck_mini_runtime/duck_config.json \
+  --commands -c 50 -p 22 -d 0 --action_scale 0.2 --min_motor_voltage 6.8
+```
+
+Use a headless startup check when no Xbox controller is connected:
+
+```powershell
+python scripts\duck_remote.py start --no-commands
+```
+
+Watch logs and stop safely:
+
+```powershell
+python scripts\duck_remote.py log
+python scripts\duck_remote.py stop
+```
+
+`stop` terminates the walk process and sends a torque-off command to all configured servos.
+
+### Power safety
+
+The default run profile is intentionally conservative:
+
+```powershell
+python scripts\duck_remote.py start --kp 22 --action-scale 0.2 --min-motor-voltage 6.8
+```
+
+The runtime checks servo bus voltage once per second. If the minimum servo voltage drops below `6.8V`, it turns off torque and exits instead of pulling the battery or power board into a hard reset.
+
+### Directly on the duck
+
+```bash
+cd ~/open_duck_mini_runtime
+source ~/.venv/bin/activate
+python -u scripts/v2_rl_walk_mujoco.py \
+  --onnx_model_path BEST_WALK_ONNX_2.onnx \
+  --duck_config_path ~/open_duck_mini_runtime/duck_config.json \
+  --commands -c 50 -p 22 -d 0 --action_scale 0.2 --min_motor_voltage 6.8
+```
 
 
 
@@ -176,5 +277,4 @@ Download the [latest policy checkpoint ](https://github.com/apirrone/Open_Duck_M
 - Y to turn on/off head control (very experimental, I don't recommend trying that, it can break your duck's head)
 - left and right triggers to control the left and right antennas
 - LB (new!) press and hold to increase the walking frequency, kind of a sprint mode 🙂
-
 ```

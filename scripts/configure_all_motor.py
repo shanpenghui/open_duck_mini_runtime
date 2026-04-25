@@ -76,7 +76,7 @@ for joint_name, joint_id in joints.items():
     io.set_mode({current_id: 0})
     io.set_maximum_acceleration({current_id: 0})
     io.set_acceleration({current_id: 0})
-    io.set_P_coefficient({current_id: 32})
+    io.set_P_coefficient({current_id: 36})
     io.set_I_coefficient({current_id: 0})
     io.set_D_coefficient({current_id: 0})
 

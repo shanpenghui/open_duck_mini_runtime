@@ -98,6 +98,13 @@ class Imu:
         self.imu_queue = Queue(maxsize=1)
         Thread(target=self.imu_worker, daemon=True).start()
 
+    def _read_vector(self, sensor_value):
+        if sensor_value is None:
+            return None
+        if any(value is None for value in sensor_value):
+            return None
+        return np.array(sensor_value, dtype=float).copy()
+
     def tare_x(self):
         print("Taring x ...")
         x_values = []
@@ -124,16 +131,15 @@ class Imu:
         while True:
             s = time.time()
             try:
-                gyro = np.array(self.imu.gyro).copy()
-                accelero = np.array(self.imu.acceleration).copy()
+                gyro = self._read_vector(self.imu.gyro)
+                accelero = self._read_vector(self.imu.acceleration)
             except Exception as e:
                 print("[IMU]:", e)
+                time.sleep(0.01)
                 continue
 
             if gyro is None or accelero is None:
-                continue
-
-            if gyro.any() is None or accelero.any() is None:
+                time.sleep(0.01)
                 continue
 
             accelero[0] -= self.x_offset
