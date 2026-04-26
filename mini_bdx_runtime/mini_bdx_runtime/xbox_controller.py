@@ -74,8 +74,8 @@ class XBoxController:
 
         l_x = apply_deadzone(-1 * self.p1.get_axis(0))  # 左摇杆左右
         l_y = apply_deadzone(-1 * self.p1.get_axis(1))  # 左摇杆前后，前为正
-        # 假设 r_x 使用 axis 3（你可根据打印结果确认）
-        r_x_raw = self.p1.get_axis(3)
+        # Current Xbox Series controller maps right-stick horizontal to axis 2.
+        r_x_raw = self.p1.get_axis(2)
         r_x = apply_deadzone(-1 * r_x_raw)
 
         # 打印 r_x 处理前后的值
