@@ -1,31 +1,48 @@
-from pypot.feetech import FeetechSTS3215IO
+import argparse
+import os
 
-io = FeetechSTS3215IO(
-    "/dev/ttyACM0",
-    baudrate=1000000,
-    use_sync_read=True,
-)
+import numpy as np
 
-joints = {
-    "left_hip_yaw": 20,
-    "left_hip_roll": 21,
-    "left_hip_pitch": 22,
-    "left_knee": 23,
-    "left_ankle": 24,
-    "neck_pitch": 30,
-    "head_pitch": 31,
-    "head_yaw": 32,
-    "head_roll": 33,
-    # "left_antenna": None,
-    # "right_antenna": None,
-    "right_hip_yaw": 10,
-    "right_hip_roll": 11,
-    "right_hip_pitch": 12,
-    "right_knee": 13,
-    "right_ankle": 14,
-}
+from mini_bdx_runtime.duck_config import DuckConfig
+from mini_bdx_runtime.rustypot_position_hwi import HWI
 
 
-voltages = io.get_present_voltage(list(joints.values()))
-for i, name in enumerate(joints.keys()):
-    print(name, round(voltages[i] * 0.1, 2), "V")
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", default="/dev/ttyACM0")
+    parser.add_argument(
+        "--duck_config_path",
+        default=os.path.join(REPO_DIR, "duck_config.json"),
+    )
+    parser.add_argument("--warn_below", type=float, default=7.1)
+    parser.add_argument("--fatal_below", type=float, default=6.8)
+    args = parser.parse_args()
+
+    config = DuckConfig(args.duck_config_path)
+    hwi = HWI(config, args.port)
+    voltages = hwi.get_present_voltages()
+    if voltages is None:
+        raise RuntimeError("Could not read motor voltages")
+
+    for name, voltage in zip(hwi.joint_names, voltages):
+        print(f"{name:16s} {float(voltage):.2f} V")
+
+    min_voltage = float(np.min(voltages))
+    print("===")
+    print(
+        f"min={min_voltage:.2f} V "
+        f"max={float(np.max(voltages)):.2f} V "
+        f"mean={float(np.mean(voltages)):.2f} V"
+    )
+
+    if min_voltage < args.fatal_below:
+        print(f"[FATAL] below {args.fatal_below:.2f} V; charge battery before walking.")
+    elif min_voltage < args.warn_below:
+        print(f"[WARN] below {args.warn_below:.2f} V; walking may brown out under load.")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,107 +1,77 @@
-from pypot.feetech import FeetechSTS3215IO
 import argparse
 import time
 
-DEFAULT_ID = 11  # A brand new motor should have id 1
-
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--port",
-    help="The port the motor is connected to. Default is /dev/ttyACM0. Use `ls /dev/tty* | grep usb` to find the port.",
-    default="/dev/ttyACM0",
-)
-parser.add_argument("--id", help="The id to set to the motor.", type=str, required=True)
-args = parser.parse_args()
-io = FeetechSTS3215IO(args.port)
-
-current_id = DEFAULT_ID
+import rustypot
 
 
-joints = {
-    "left_hip_yaw": 20,
-    "left_hip_roll": 21,
-    "left_hip_pitch": 22,
-    "left_knee": 23,
-    "left_ankle": 24,
-    "neck_pitch": 30,
-    "head_pitch": 31,
-    "head_yaw": 32,
-    "head_roll": 33,
-    "right_hip_yaw": 10,
-    "right_hip_roll": 11,
-    "right_hip_pitch": 12,
-    "right_knee": 13,
-    "right_ankle": 14,
-}
-def scan():
-    id = None
-    for i in range(255):
+DEFAULT_ID = 1
 
-        print(f"scanning for id {i} ...")
+
+def scan(io):
+    for servo_id in range(255):
+        print(f"scanning for id {servo_id} ...")
         try:
-            io.get_present_position([i])
-            id = i
-            print(f"Found motor with id {id}")
-            break
+            io.read_present_position(servo_id)
+            print(f"Found motor with id {servo_id}")
+            return servo_id
         except Exception:
             pass
-    return id
+    return None
 
-for id in joints.values():
-    print(f"Assigned value: {id}")
-    current_id = id
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", default="/dev/ttyACM0")
+    parser.add_argument("--id", type=int, default=None, help="Servo id to configure.")
+    parser.add_argument("--new_id", type=int, default=None, help="Optional new servo id.")
+    parser.add_argument("--kp", type=int, default=32)
+    parser.add_argument("--ki", type=int, default=0)
+    parser.add_argument("--kd", type=int, default=0)
+    parser.add_argument("--acceleration", type=int, default=0)
+    parser.add_argument("--maximum_acceleration", type=int, default=0)
+    parser.add_argument("--goal_position", type=float, default=0.0, help="Radians.")
+    args = parser.parse_args()
+
+    io = rustypot.Sts3215PyController(args.port, 1000000, 0.05)
+    servo_id = args.id if args.id is not None else DEFAULT_ID
+
     try:
-        io.get_present_position([DEFAULT_ID])
+        io.read_present_position(servo_id)
     except Exception:
-        print(
-            f"Could not find motor with default id ({DEFAULT_ID}). Scanning for motor ..."
-        )
-        res = scan()
-        if res is not None:
-            current_id = res
-        else:
-            print("Could not find motor. Exiting ...")
-            exit()
+        print(f"Could not find motor with id {servo_id}. Scanning for motor ...")
+        servo_id = scan(io)
+        if servo_id is None:
+            raise RuntimeError("Could not find any motor on the bus")
 
+    print(f"Configuring motor {servo_id}")
+    io.write_lock(servo_id, 0)
+    io.write_mode(servo_id, 0)
+    io.write_maximum_acceleration(servo_id, args.maximum_acceleration)
+    io.write_acceleration(servo_id, args.acceleration)
+    io.write_p_coefficient(servo_id, args.kp)
+    io.write_i_coefficient(servo_id, args.ki)
+    io.write_d_coefficient(servo_id, args.kd)
 
-    # print("current id: ", current_id)
+    if args.new_id is not None and args.new_id != servo_id:
+        print(f"Changing id {servo_id} -> {args.new_id}")
+        io.write_id(servo_id, args.new_id)
+        servo_id = args.new_id
+        time.sleep(0.5)
 
-    kp = io.get_P_coefficient([current_id])
-    ki = io.get_I_coefficient([current_id])
-    kd = io.get_D_coefficient([current_id])
-    max_acceleration = io.get_maximum_acceleration([current_id])
-    acceleration = io.get_acceleration([current_id])
-    mode = io.get_mode([current_id])
-
-    # print(f"PID : {kp}, {ki}, {kd}")
-    # print(f"max_acceleration: {max_acceleration}")
-    # print(f"acceleration: {acceleration}")
-    # print(f"mode: {mode}")
-
-    io.set_lock({current_id: 0})
-    io.set_mode({current_id: 0})
-    io.set_maximum_acceleration({current_id: 0})
-    io.set_acceleration({current_id: 0})
-    io.set_P_coefficient({current_id: 32})
-    io.set_I_coefficient({current_id: 0})
-    io.set_D_coefficient({current_id: 0})
-    # io.change_id({current_id: int(args.id)})
-
-    # current_id = int(args.id)
-
-    time.sleep(1)
-
-    io.set_goal_position({current_id: 0})
-
-    time.sleep(1)
+    io.write_goal_position(servo_id, args.goal_position)
+    time.sleep(0.5)
 
     print("===")
     print("Done configuring motor.")
-    print(f"Motor id: {current_id}")
-    print(f"P coefficient : {io.get_P_coefficient([current_id])}")
-    print(f"I coefficient : {io.get_I_coefficient([current_id])}")
-    print(f"D coefficient : {io.get_D_coefficient([current_id])}")
-    print(f"acceleration: {io.get_acceleration([current_id])}")
-    print(f"max_acceleration: {io.get_maximum_acceleration([current_id])}")
-    print(f"mode: {io.get_mode([current_id])}")
+    print(f"Motor id: {servo_id}")
+    print(f"P coefficient: {io.read_p_coefficient(servo_id)}")
+    print(f"I coefficient: {io.read_i_coefficient(servo_id)}")
+    print(f"D coefficient: {io.read_d_coefficient(servo_id)}")
+    print(f"acceleration: {io.read_acceleration(servo_id)}")
+    print(f"max_acceleration: {io.read_maximum_acceleration(servo_id)}")
+    print(f"mode: {io.read_mode(servo_id)}")
     print("===")
+
+
+if __name__ == "__main__":
+    main()

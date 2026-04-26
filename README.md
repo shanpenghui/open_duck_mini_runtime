@@ -256,6 +256,16 @@ python scripts\duck_remote.py start --kp 22 --action-scale 0.2 --min-motor-volta
 
 The runtime checks servo bus voltage once per second. If the minimum servo voltage drops below `6.8V`, it turns off torque and exits instead of pulling the battery or power board into a hard reset.
 
+Check the current servo bus voltage with the same `rustypot` backend used by the walk runtime:
+
+```bash
+cd ~/open_duck_mini_runtime
+source ~/.venv/bin/activate
+python3 scripts/check_voltage.py
+```
+
+If the static minimum voltage is near `7.1V`, the battery may sag below `6.8V` while walking and the runtime will safely turn torque off.
+
 ### Directly on the duck
 
 ```bash
