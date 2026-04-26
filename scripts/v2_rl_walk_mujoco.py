@@ -8,6 +8,7 @@ from mini_bdx_runtime.onnx_infer import OnnxInfer
 from mini_bdx_runtime.raw_imu import Imu
 from mini_bdx_runtime.poly_reference_motion import PolyReferenceMotion
 from mini_bdx_runtime.xbox_controller import XBoxController
+from mini_bdx_runtime.keyboard_controller import KeyboardController
 from mini_bdx_runtime.feet_contacts import FeetContacts
 from mini_bdx_runtime.eyes import Eyes
 from mini_bdx_runtime.sounds import Sounds
@@ -41,6 +42,7 @@ class RLWalk:
             pid=[30, 0, 0],
             action_scale=0.25,
             commands=False,
+            command_source="xbox",
             pitch_bias=0,
             save_obs=False,
             replay_obs=None,
@@ -52,6 +54,7 @@ class RLWalk:
         self.duck_config = DuckConfig(config_json_path=duck_config_path)
 
         self.commands = commands
+        self.command_source = "none" if not commands else command_source
         self.pitch_bias = pitch_bias
 
         self.onnx_model_path = onnx_model_path
@@ -116,8 +119,14 @@ class RLWalk:
         self.paused = self.duck_config.start_paused
 
         self.command_freq = 20  # hz
-        if self.commands:
+        if self.command_source == "xbox":
             self.xbox_controller = XBoxController(self.command_freq)
+            self.command_controller = self.xbox_controller
+        elif self.command_source == "keyboard":
+            self.keyboard_controller = KeyboardController(self.command_freq)
+            self.command_controller = self.keyboard_controller
+        else:
+            self.command_controller = None
 
         # Reference motion, but we only really need the length of one phase
         # TODO
@@ -288,9 +297,9 @@ class RLWalk:
                 right_trigger = 0
                 t = time.time()
 
-                if self.commands:
+                if self.command_controller is not None:
                     self.last_commands, self.buttons, left_trigger, right_trigger = (
-                        self.xbox_controller.get_last_command()
+                        self.command_controller.get_last_command()
                     )
                     # if i % 20 == 0:
                     #     print(f"[CMD] lin_x={self.last_commands[0]:.3f}, lin_y={self.last_commands[1]:.3f}, yaw={self.last_commands[2]:.3f}")
@@ -467,6 +476,8 @@ class RLWalk:
             if self.duck_config.antennas:
                 self.antennas.stop()
         finally:
+            if self.command_controller is not None and hasattr(self.command_controller, "close"):
+                self.command_controller.close()
             self.hwi.turn_off()
 
         if self.save_obs:
@@ -495,13 +506,19 @@ if __name__ == "__main__":
         "--commands",
         action="store_true",
         default=True,
-        help="external commands, keyboard or gamepad. Launch control_server.py on host computer",
+        help="enable external commands from the selected command source",
     )
     parser.add_argument(
         "--no-commands",
         action="store_false",
         dest="commands",
         help="disable gamepad commands, useful for headless startup checks",
+    )
+    parser.add_argument(
+        "--command_source",
+        choices=("xbox", "keyboard"),
+        default="xbox",
+        help="external command source when --commands is enabled",
     )
     parser.add_argument(
         "--save_obs",
@@ -537,6 +554,7 @@ if __name__ == "__main__":
         pid=pid,
         control_freq=args.control_freq,
         commands=args.commands,
+        command_source=args.command_source,
         pitch_bias=args.pitch_bias,
         save_obs=args.save_obs,
         replay_obs=args.replay_obs,
