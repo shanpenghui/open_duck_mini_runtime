@@ -289,6 +289,34 @@ python -u scripts/v2_rl_walk_mujoco.py \
   --commands -c 50 -p 22 -d 0 --action_scale 0.2 --min_motor_voltage 6.8
 ```
 
+### Keyboard control on the duck
+
+Keyboard control must run in the foreground inside an interactive SSH session. Do not start it with `nohup` or `duck_remote.py start`, because background processes cannot receive keyboard input.
+
+```bash
+cd ~/open_duck_mini_runtime
+source ~/.venv/bin/activate
+python -u scripts/v2_rl_walk_mujoco.py \
+  --onnx_model_path BEST_WALK_ONNX_2.onnx \
+  --duck_config_path ~/open_duck_mini_runtime/duck_config.json \
+  --commands --command_source keyboard \
+  -c 50 -p 22 -d 0 --action_scale 0.2 \
+  --min_motor_voltage 6.5 --power_log_interval 1.0
+```
+
+Keyboard mapping:
+
+```text
+P       pause/unpause, replaces Xbox A
+W/S     forward/backward
+A/D     strafe left/right
+Q/E     yaw left/right
+Space   zero all commands
+H       toggle head control mode
+U/J     phase frequency +/-
+Ctrl+C  stop and turn torque off
+```
+
 
 
 ```
