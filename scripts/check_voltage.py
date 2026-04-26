@@ -26,17 +26,29 @@ def main():
     voltages = hwi.get_present_voltages()
     if voltages is None:
         raise RuntimeError("Could not read motor voltages")
+    currents = hwi.get_present_currents()
 
-    for name, voltage in zip(hwi.joint_names, voltages):
-        print(f"{name:16s} {float(voltage):.2f} V")
+    if currents is None:
+        for name, voltage in zip(hwi.joint_names, voltages):
+            print(f"{name:16s} {float(voltage):.2f} V")
+    else:
+        for name, voltage, current in zip(hwi.joint_names, voltages, currents):
+            print(f"{name:16s} {float(voltage):.2f} V  {float(current):+.3f} A")
 
     min_voltage = float(np.min(voltages))
     print("===")
-    print(
+    summary = (
         f"min={min_voltage:.2f} V "
         f"max={float(np.max(voltages)):.2f} V "
         f"mean={float(np.mean(voltages)):.2f} V"
     )
+    if currents is not None:
+        abs_currents = np.abs(currents)
+        summary += (
+            f"  sum_abs_current={float(np.sum(abs_currents)):.2f} A "
+            f"max_abs_current={float(np.max(abs_currents)):.2f} A"
+        )
+    print(summary)
 
     if min_voltage < args.fatal_below:
         print(f"[FATAL] below {args.fatal_below:.2f} V; charge battery before walking.")

@@ -266,6 +266,18 @@ python3 scripts/check_voltage.py
 
 If the static minimum voltage is near `7.1V`, the battery may sag below `6.8V` while walking and the runtime will safely turn torque off.
 
+To log voltage and servo current while walking, add `--power_log_interval`:
+
+```bash
+python -u scripts/v2_rl_walk_mujoco.py \
+  --onnx_model_path BEST_WALK_ONNX_2.onnx \
+  --duck_config_path ~/open_duck_mini_runtime/duck_config.json \
+  --commands -c 50 -p 22 -d 0 --action_scale 0.2 \
+  --min_motor_voltage 6.8 --power_log_interval 1.0
+```
+
+The current values are converted from STS3215 feedback raw units using 6.5mA per unit.
+
 ### Directly on the duck
 
 ```bash

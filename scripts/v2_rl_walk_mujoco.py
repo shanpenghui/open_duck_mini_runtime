@@ -46,6 +46,7 @@ class RLWalk:
             replay_obs=None,
             cutoff_frequency=None,
             min_motor_voltage=6.8,
+            power_log_interval=0.0,
     ):
 
         self.duck_config = DuckConfig(config_json_path=duck_config_path)
@@ -94,6 +95,12 @@ class RLWalk:
         self.action_scale = action_scale
         self.min_motor_voltage = min_motor_voltage
         self.voltage_check_interval = max(1, int(self.control_freq))
+        self.power_log_interval = power_log_interval
+        self.power_log_interval_steps = (
+            max(1, int(self.control_freq * self.power_log_interval))
+            if self.power_log_interval > 0
+            else 0
+        )
 
         self.last_action = np.zeros(self.num_dofs)
         self.last_last_action = np.zeros(self.num_dofs)
@@ -226,12 +233,24 @@ class RLWalk:
 
         time.sleep(2)
 
-    def check_motor_voltage(self):
+    def check_motor_voltage(self, log_power=False):
         voltages = self.hwi.get_present_voltages()
         if voltages is None or len(voltages) == 0:
             return True
 
         min_voltage = float(np.min(voltages))
+        if log_power:
+            currents = self.hwi.get_present_currents()
+            if currents is not None and len(currents) > 0:
+                abs_currents = np.abs(currents)
+                max_current_i = int(np.argmax(abs_currents))
+                print(
+                    f"[POWER] min_voltage={min_voltage:.2f}V "
+                    f"sum_abs_current={float(np.sum(abs_currents)):.2f}A "
+                    f"max_abs_current={float(abs_currents[max_current_i]):.2f}A "
+                    f"({self.hwi.joint_names[max_current_i]})"
+                )
+
         if min_voltage < self.min_motor_voltage:
             print(
                 f"[FATAL] Motor bus voltage too low: {min_voltage:.2f}V "
@@ -320,7 +339,11 @@ class RLWalk:
                             print("UNPAUSE")
 
                 if i % self.voltage_check_interval == 0:
-                    if not self.check_motor_voltage():
+                    log_power = (
+                        self.power_log_interval_steps > 0
+                        and i % self.power_log_interval_steps == 0
+                    )
+                    if not self.check_motor_voltage(log_power=log_power):
                         break
 
                 if self.paused:
@@ -496,6 +519,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--cutoff_frequency", type=float, default=None)
     parser.add_argument("--min_motor_voltage", type=float, default=6.8)
+    parser.add_argument(
+        "--power_log_interval",
+        type=float,
+        default=0.0,
+        help="Seconds between voltage/current log lines. 0 disables power logs.",
+    )
 
     args = parser.parse_args()
     pid = [args.p, args.i, args.d]
@@ -513,6 +542,7 @@ if __name__ == "__main__":
         replay_obs=args.replay_obs,
         cutoff_frequency=args.cutoff_frequency,
         min_motor_voltage=args.min_motor_voltage,
+        power_log_interval=args.power_log_interval,
     )
     print("Done instantiating RLWalk")
     rl_walk.run()

@@ -46,6 +46,13 @@ class FeetechSTS3215Adapter:
             return self.io.read_present_voltage(ids)
         return self.io.sync_read_present_voltage(ids)
 
+    def read_present_current(self, ids):
+        if self.legacy_api:
+            if hasattr(self.io, "read_present_current"):
+                return self.io.read_present_current(ids)
+            return self.io.get_present_current(ids)
+        return self.io.sync_read_present_current(ids)
+
     def disable_torque(self, ids):
         if self.legacy_api:
             return self.io.disable_torque(ids)
@@ -316,3 +323,23 @@ class HWI:
             if joint not in ignore
         ]
         return np.array(np.around(voltages, 2))
+
+    def get_present_currents(self, ignore=None):
+        """
+        Returns present servo currents in amps.
+        STS3215 current feedback uses 6.5mA per raw unit.
+        """
+        ignore = set(ignore or [])
+
+        try:
+            present_currents = self.io.read_present_current(list(self.joint_ids))
+        except Exception as e:
+            print(e)
+            return None
+
+        currents = [
+            current * 0.0065
+            for joint, current in zip(self.joint_names, present_currents)
+            if joint not in ignore
+        ]
+        return np.array(np.around(currents, 3))
