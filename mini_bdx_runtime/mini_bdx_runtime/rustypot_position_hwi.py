@@ -128,8 +128,6 @@ class HWI:
         self.kds = np.ones(len(self.joints)) * 0  # default kd
         self.low_torque_kps = np.ones(len(self.joints)) * 2
 
-        self.io = FeetechSTS3215Adapter(usb_port, 1000000)
-
         # Track which servos failed to configure
         self.failed_servos = set()
         self.joint_ids = tuple(self.joints.values())
@@ -138,8 +136,49 @@ class HWI:
         self.position_fallback_delay = 0.0005
         self._last_position_write_warning = 0.0
 
+        try:
+            self.io = FeetechSTS3215Adapter(usb_port, 1000000)
+        except OSError as e:
+            print(f"[FATAL] Failed to open servo bus {usb_port}: {e}")
+            print("[FATAL] Check the USB servo adapter path, cable, and power.")
+            raise
+
     def _servo_name(self, servo_id):
         return self.joint_name_by_id.get(servo_id, str(servo_id))
+
+    def _format_servo(self, servo_id):
+        return f"{servo_id}({self._servo_name(servo_id)})"
+
+    def _format_servos(self, servo_ids):
+        return ", ".join(self._format_servo(sid) for sid in servo_ids)
+
+    def _log_servo_error(self, operation, servo_ids, error):
+        print(
+            f"[ERROR] {operation} failed for servo(s) "
+            f"{self._format_servos(servo_ids)}: {error}"
+        )
+
+    def _read_servos_with_diagnostics(self, operation, read_fn, ids):
+        try:
+            return read_fn(list(ids))
+        except Exception as e:
+            self._log_servo_error(operation, ids, e)
+
+        bad_servos = []
+        for sid in ids:
+            try:
+                read_fn([sid])
+            except Exception as e:
+                bad_servos.append(sid)
+                self._log_servo_error(f"{operation} single-read check", [sid], e)
+
+        if bad_servos:
+            self.failed_servos.update(bad_servos)
+            print(
+                "[FATAL] Servo read failed for IDs: "
+                f"{self._format_servos(bad_servos)}"
+            )
+        return None
 
     def _write_servo_with_retry(self, write_fn, servo_id, max_retries=3, delay=0.1):
         """Write to a single servo with retry logic. Returns True on success."""
@@ -181,7 +220,12 @@ class HWI:
             time.sleep(0.01)
 
     def set_kp(self, id, kp):
-        self.io.set_kps([id], [kp])
+        try:
+            self.io.set_kps([id], [kp])
+        except Exception as e:
+            self.failed_servos.add(id)
+            self._log_servo_error("set_kp", [id], e)
+            raise
 
     def turn_on(self):
         # Phase 1: low kps (safe torque)
@@ -222,7 +266,18 @@ class HWI:
             )
 
     def turn_off(self):
-        self.io.disable_torque(list(self.joint_ids))
+        try:
+            self.io.disable_torque(list(self.joint_ids))
+        except Exception as e:
+            self._log_servo_error("disable_torque bulk", self.joint_ids, e)
+            for sid in self.joint_ids:
+                try:
+                    self.io.disable_torque([sid])
+                except Exception as single_error:
+                    self.failed_servos.add(sid)
+                    self._log_servo_error(
+                        "disable_torque single-write check", [sid], single_error
+                    )
 
     def set_position(self, joint_name, pos):
         """
@@ -230,7 +285,12 @@ class HWI:
         """
         id = self.joints[joint_name]
         pos = pos + self.joints_offsets[joint_name]
-        self.io.write_goal_position([id], [pos])
+        try:
+            self.io.write_goal_position([id], [pos])
+        except Exception as e:
+            self.failed_servos.add(id)
+            self._log_servo_error("write_goal_position", [id], e)
+            raise
 
     def set_position_all(self, joints_positions):
         """
@@ -251,14 +311,18 @@ class HWI:
         except Exception as e:
             now = time.monotonic()
             if now - self._last_position_write_warning > 1.0:
-                print(f"[WARN] bulk goal position write failed, falling back to single writes: {e}")
+                print(
+                    "[WARN] bulk goal position write failed for servo(s) "
+                    f"{self._format_servos(ids)}, falling back to single writes: {e}"
+                )
                 self._last_position_write_warning = now
 
         for sid, pos in zip(ids, positions):
             try:
                 self.io.write_goal_position([sid], [pos])
-            except Exception:
-                pass
+            except Exception as e:
+                self.failed_servos.add(sid)
+                self._log_servo_error("write_goal_position single-write check", [sid], e)
             if self.position_fallback_delay:
                 time.sleep(self.position_fallback_delay)
 
@@ -268,12 +332,10 @@ class HWI:
         """
         ignore = set(ignore or [])
 
-        try:
-            present_positions = self.io.read_present_position(
-                list(self.joint_ids)
-            )
-        except Exception as e:
-            print(e)
+        present_positions = self._read_servos_with_diagnostics(
+            "read_present_position", self.io.read_present_position, self.joint_ids
+        )
+        if present_positions is None:
             return None
 
         present_positions = [
@@ -289,12 +351,10 @@ class HWI:
         """
         ignore = set(ignore or [])
 
-        try:
-            present_velocities = self.io.read_present_velocity(
-                list(self.joint_ids)
-            )
-        except Exception as e:
-            print(e)
+        present_velocities = self._read_servos_with_diagnostics(
+            "read_present_velocity", self.io.read_present_velocity, self.joint_ids
+        )
+        if present_velocities is None:
             return None
 
         present_velocities = [
@@ -311,10 +371,10 @@ class HWI:
         """
         ignore = set(ignore or [])
 
-        try:
-            present_voltages = self.io.read_present_voltage(list(self.joint_ids))
-        except Exception as e:
-            print(e)
+        present_voltages = self._read_servos_with_diagnostics(
+            "read_present_voltage", self.io.read_present_voltage, self.joint_ids
+        )
+        if present_voltages is None:
             return None
 
         voltages = [
@@ -331,10 +391,10 @@ class HWI:
         """
         ignore = set(ignore or [])
 
-        try:
-            present_currents = self.io.read_present_current(list(self.joint_ids))
-        except Exception as e:
-            print(e)
+        present_currents = self._read_servos_with_diagnostics(
+            "read_present_current", self.io.read_present_current, self.joint_ids
+        )
+        if present_currents is None:
             return None
 
         currents = [
