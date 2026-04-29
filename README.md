@@ -1,5 +1,63 @@
 # Open Duck Mini Runtime
 
+## Camera V2 Arrow Vision Control
+
+This branch adds Raspberry Pi Camera V2 arrow-recognition helpers for the
+Open Duck Mini walking runtime. The scripts are designed for the Pi-side virtual
+environment at `~/.venv`.
+
+Vision-only test, without moving the robot:
+
+```bash
+cd ~/open_duck_mini_runtime
+source ~/.venv/bin/activate
+./scripts/run_arrow_open_duck_runtime.sh --vision-only --threshold-mode dark --roi none --min-area 80 --sample-rotation-deg 35 --confidence 0.55
+```
+
+The detector uses real sample arrows from `assets/arrow_samples/` and prints a
+JSON line for each stable result, for example:
+
+```json
+{"arrow":"left","confidence":0.9751,"raw_arrow":"left","raw_confidence":0.9606,"state":"strafe_left","key":"a"}
+```
+
+Full arrow-controlled walking:
+
+```bash
+cd ~/open_duck_mini_runtime
+source ~/.venv/bin/activate
+./scripts/run_arrow_open_duck_runtime.sh --threshold-mode dark --roi none --min-area 80 --sample-rotation-deg 35 --confidence 0.55
+```
+
+Arrow mapping:
+
+```text
+forward -> W, walk forward
+back    -> E, turn right
+left    -> A, strafe left
+right   -> D, strafe right
+none    -> SPACE, hold still
+```
+
+Xbox manual control with arrow turn assist:
+
+```bash
+cd ~/open_duck_mini_runtime
+source ~/.venv/bin/activate
+./scripts/run_arrow_xbox_assist_runtime.sh --threshold-mode dark --roi none --min-area 80 --sample-rotation-deg 35 --confidence 0.55
+```
+
+In this mode, Xbox remains the main controller. Press Xbox `A` to toggle
+pause/running. When the camera sees a stable side arrow while running, the
+wrapper turns once and pauses:
+
+```text
+left arrow  -> Q for about 1.55 seconds -> pause
+right arrow -> E for about 1.55 seconds -> pause
+```
+
+Tune the physical 90-degree turn with `--turn-duration-s`.
+
 ## Raspberry Pi zero 2W setup
 
 ### Install Raspberry Pi OS
