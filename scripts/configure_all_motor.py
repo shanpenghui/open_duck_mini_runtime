@@ -20,10 +20,27 @@ JOINTS = {
     "right_ankle": 14,
 }
 
+MOTOR_P_VALUES = {
+    10: 33,
+    11: 33,
+    12: 33,
+    13: 33,
+    14: 33,
+    20: 33,
+    21: 33,
+    22: 33,
+    23: 33,
+    24: 33,
+    30: 20,
+    31: 20,
+    32: 18,
+    33: 18,
+}
+
 
 def configure_motor(io, servo_id, kp, ki, kd, acceleration, maximum_acceleration, goal_position):
     io.read_present_position(servo_id)
-    io.write_lock(servo_id, 0)
+    io.write_lock(servo_id, False)
     io.write_mode(servo_id, 0)
     io.write_maximum_acceleration(servo_id, maximum_acceleration)
     io.write_acceleration(servo_id, acceleration)
@@ -37,7 +54,6 @@ def configure_motor(io, servo_id, kp, ki, kd, acceleration, maximum_acceleration
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", default="/dev/ttyACM0")
-    parser.add_argument("--kp", type=int, default=36)
     parser.add_argument("--ki", type=int, default=0)
     parser.add_argument("--kd", type=int, default=0)
     parser.add_argument("--acceleration", type=int, default=0)
@@ -48,11 +64,12 @@ def main():
     io = rustypot.Sts3215PyController(args.port, 1000000, 0.05)
 
     for joint_name, servo_id in JOINTS.items():
-        print(f"Configuring {joint_name} ({servo_id})")
+        kp = MOTOR_P_VALUES[servo_id]
+        print(f"Configuring {joint_name} ({servo_id}) with P={kp}")
         configure_motor(
             io,
             servo_id,
-            args.kp,
+            kp,
             args.ki,
             args.kd,
             args.acceleration,
