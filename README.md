@@ -328,3 +328,79 @@ Ctrl+C  stop and turn torque off
 - left and right triggers to control the left and right antennas
 - LB (new!) press and hold to increase the walking frequency, kind of a sprint mode 🙂
 ```
+
+## Standing Policy
+
+A standing-only policy trained with PPO (MuJoCo MJX) on RTX 5090 D. The model keeps the duck balanced upright with no locomotion commands.
+
+### Training (WSL with GPU)
+
+The training code lives in [open_duck_playground](https://github.com/apirrone/Open_Duck_Playground). Clone and set up the environment:
+
+\\ash
+# In WSL (Ubuntu 22.04)
+cd ~/work/open_duck_playground
+source ~/.venvs/open_duck_playground_py310/bin/activate
+\
+Train the standing policy (300M steps, ~30 min on RTX 5090 D):
+
+\\ash
+TF_CPP_MIN_LOG_LEVEL=3 TF_ENABLE_ONEDNN_OPTS=0 \
+python playground/open_duck_mini_v2/runner.py \
+  --env standing \
+  --num_timesteps 300000000 \
+  --output_dir checkpoints_standing_300m
+\
+Training parameters:
+
+- **PPO config**: BerkeleyHumanoidJoystickFlatTerrain
+- **Obs dim**: 85 (gyro 3 + accel 3 + command 7 + joints 14 + vel 14 + 3xhistory 42 + contacts 2)
+- **Action dim**: 14 (14 actuator joints)
+- **action_scale**: 0.15
+- **Network**: 85->512->256->128->28 (SiLU activations, 14 action + 14 value heads)
+- **normalize_observations**: True (baked into ONNX)
+- **sim_dt / ctrl_dt**: 0.002 / 0.02 (50 Hz control)
+- **num_envs**: 8192
+- **episode_length**: 1000 steps (20s)
+
+The last ONNX checkpoint in \checkpoints_standing_300m/\ is the trained model.
+
+### Deployment on the duck
+
+The trained model is saved as \BEST_STANDING_ONNX.onnx\ in this repo. A dedicated launch script is provided:
+
+\\ash
+cd ~/open_duck_mini_runtime
+source ~/.venv/bin/activate
+
+# Default: uses BEST_STANDING_ONNX.onnx, action_scale=0.15, 50Hz
+python -u scripts/v2_rl_standing.py
+\
+Or using the generic walk script with \--policy_mode standing\:
+
+\\ash
+python -u scripts/v2_rl_walk_mujoco.py \
+  --onnx_model_path BEST_STANDING_ONNX.onnx \
+  --policy_mode standing \
+  --duck_config_path ~/duck_config.json \
+  --action_scale 0.15 \
+  -c 50 -p 22 -d 0 --min_motor_voltage 6.8
+\
+### Standing vs Walking modes
+
+| | Standing | Walking |
+|---|---------|--------|
+| Obs dim | 85 | 101 |
+| ONNX model | BEST_STANDING_ONNX.onnx | BEST_WALK_ONNX_2.onnx |
+| action_scale | 0.15 | 0.25 (train) / 0.2 (deploy) |
+| Command input | All zeros (no locomotion) | lin_x, lin_y, yaw + head angles |
+| PRM / imitation | Disabled | Enabled |
+
+### Evaluation results (MuJoCo simulation)
+
+- **Training steps**: 321M
+- **Survival rate (40s episodes)**: 100% (20/20)
+- **Mean standing height**: 0.1585m
+- **Height stability (std)**: +/-0.0005m
+- **Max push tolerance (100% survival)**: 0.3 m/s (0.63 Ns impulse)
+- **Robot mass**: 2.107 kg
