@@ -5,7 +5,16 @@ import time
 import rustypot
 
 
+def scalar_reading(value):
+    if isinstance(value, (list, tuple)):
+        if len(value) != 1:
+            raise ValueError(f"Expected one reading, got {len(value)}: {value!r}")
+        return value[0]
+    return value
+
+
 def convert_load(raw_load):
+    raw_load = scalar_reading(raw_load)
     sign = -1
     if raw_load > 1023:
         raw_load -= 1024
@@ -47,11 +56,11 @@ def main():
         t = time.time() - started_at
         io.write_goal_position(args.id, args.goal_position)
         times.append(t)
-        positions.append(io.read_present_position(args.id))
+        positions.append(scalar_reading(io.read_present_position(args.id)))
         goal_positions.append(args.goal_position)
-        speeds.append(io.read_present_speed(args.id))
+        speeds.append(scalar_reading(io.read_present_speed(args.id)))
         loads.append(convert_load(io.read_present_load(args.id)))
-        currents.append(io.read_present_current(args.id))
+        currents.append(scalar_reading(io.read_present_current(args.id)))
 
         if t > args.duration:
             break

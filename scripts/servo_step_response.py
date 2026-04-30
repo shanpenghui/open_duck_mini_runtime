@@ -61,6 +61,14 @@ def resolve_id(id_or_name):
         sys.exit(1)
 
 
+def scalar_reading(value):
+    if isinstance(value, (list, tuple)):
+        if len(value) != 1:
+            raise ValueError(f"Expected one reading, got {len(value)}: {value!r}")
+        return value[0]
+    return value
+
+
 def run_step_test(io, servo_id, kp, kd, goal_pos, duration, settle_time,
                   sample_interval, servo_name):
     """Run one step response test and return recorded data."""
@@ -75,7 +83,7 @@ def run_step_test(io, servo_id, kp, kd, goal_pos, duration, settle_time,
     time.sleep(settle_time)
 
     # Verify start position
-    start_pos = io.read_present_position(servo_id)
+    start_pos = scalar_reading(io.read_present_position(servo_id))
     print(f"  Start position: {start_pos:.3f} rad ({np.degrees(start_pos):.1f}°)")
 
     # Recording buffers
@@ -102,17 +110,17 @@ def run_step_test(io, servo_id, kp, kd, goal_pos, duration, settle_time,
         goal_positions.append(goal_pos)
 
         try:
-            positions.append(io.read_present_position(servo_id))
+            positions.append(scalar_reading(io.read_present_position(servo_id)))
         except Exception:
             positions.append(positions[-1] if positions else 0.0)
 
         try:
-            velocities.append(io.read_present_speed(servo_id))
+            velocities.append(scalar_reading(io.read_present_speed(servo_id)))
         except Exception:
             velocities.append(0.0)
 
         try:
-            currents.append(io.read_present_current(servo_id))
+            currents.append(scalar_reading(io.read_present_current(servo_id)))
         except Exception:
             currents.append(0.0)
 
