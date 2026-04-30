@@ -404,3 +404,147 @@ python -u scripts/v2_rl_walk_mujoco.py \
 - **Height stability (std)**: +/-0.0005m
 - **Max push tolerance (100% survival)**: 0.3 m/s (0.63 Ns impulse)
 - **Robot mass**: 2.107 kg
+
+## Sim2Real Diagnostic Tools
+
+These tools help identify the gap between simulation training and real robot behavior. They are on the `dev/deploy_dev` branch.
+
+```bash
+git fetch origin
+git checkout dev/deploy_dev
+```
+
+### Walking Diagnostic Recorder
+
+Records a time-synchronized data stream from a walking policy on the real robot: joint positions (commanded vs actual), velocities, currents, IMU, foot contacts, full obs/actions, and loop timing.
+
+**Run on the duck:**
+
+```bash
+source ~/.venv/bin/activate
+
+# Record 15s of forward walking at 0.15 m/s with BEST_WALK model
+cd ~/open_duck_mini_runtime
+python -u scripts/diagnostic_record.py \
+  --onnx_model_path BEST_WALK_ONNX_2.onnx \
+  --duration 15 \
+  --command_vel_x 0.15 \
+  --action_scale 0.25
+
+# Compare different action_scale values
+python -u scripts/diagnostic_record.py \
+  --onnx_model_path BEST_WALK_ONNX_2.onnx \
+  --duration 10 \
+  --command_vel_x 0.15 \
+  --action_scale 0.13 \
+  --output diagnostic_scale013.pkl
+```
+
+**No Xbox controller needed** — it uses a fixed constant command. Just set the duck on the floor standing and let it run.
+
+**Key parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--duration` | 15.0 | Recording time in seconds |
+| `--command_vel_x` | 0.15 | Forward velocity command (m/s) |
+| `--command_vel_y` | 0.0 | Lateral velocity command (m/s) |
+| `--command_yaw` | 0.0 | Yaw rate command (rad/s) |
+| `--action_scale` | 0.25 | Action scale (try 0.25 and 0.13 to compare) |
+| `--control_freq` | 50 | Control loop frequency (Hz) |
+| `--pid` | 30 0 0 | Servo PID gains |
+| `--output` | auto | Output pkl filename |
+
+**What it records:**
+
+- `joint_pos_actual` (N×14) — servo-reported positions
+- `joint_vel_actual` (N×14) — servo-reported velocities
+- `joint_current_actual` (N×14) — servo currents (A)
+- `joint_voltage_actual` (N×14) — servo bus voltages (V)
+- `obs` (N×101) — full observation vector sent to ONNX
+- `action_raw` (N×14) — raw policy output (before action_scale)
+- `motor_targets` (N×14) — final target positions sent to servos
+- `imu_gyro` (N×3), `imu_accel` (N×3)
+- `feet_contacts` (N×2)
+- `loop_time_ms`, `obs_build_time_ms`, `infer_time_ms`, `write_time_ms`
+
+### Diagnostic Analyzer
+
+Analyze a recorded pkl file and auto-diagnose sim2real gap issues. **Runs on your Windows machine.**
+
+```powershell
+python scripts\analyze_diagnostic.py diagnostic_20260501_123455_0.15vx.pkl
+```
+
+**Auto-diagnoses:**
+
+| Check | Threshold | Meaning |
+|-------|-----------|---------|
+| Position tracking error > 8° | CRITICAL | sim kp too strong vs real servo |
+| Position tracking error 4-8° | WARNING | Moderate kp mismatch |
+| Current > 1.2A | WARNING | Near torque saturation |
+| Velocity > 3.5 rad/s | WARNING | Near velocity limit |
+| Action > 0.95 saturation > 5% | CRITICAL | Policy output clipping |
+| Loop overbudget > 10% | CRITICAL | Control freq unsustainable |
+
+### Single-Servo Step Response Test
+
+Tests one servo's actual step response at different kp values. Used to calibrate MuJoCo XML actuator parameters to match real hardware.
+
+**Run on the duck:**
+
+```bash
+source ~/.venv/bin/activate
+
+# Test left_knee at kp=13,30,50 (the most important joint to test)
+python -u scripts/servo_step_response.py \
+  --id left_knee --kp 13,30,50 --goal 1.0
+
+# Test hip_pitch
+python -u scripts/servo_step_response.py \
+  --id left_hip_pitch --kp 13,30,50 --goal 0.5
+
+# Using servo ID directly
+python -u scripts/servo_step_response.py \
+  --id 23 --kp 13,30,50 --goal 1.0 --duration 5
+```
+
+**Key parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--id` | required | Servo ID (number) or joint name (e.g. `left_knee`) |
+| `--kp` | 30 | KP value(s), comma-separated for sweep (e.g. `13,30,50`) |
+| `--kd` | 0 | KD (damping) value |
+| `--goal` | 1.0 | Goal position in radians |
+| `--duration` | 3.0 | Recording duration per test (seconds) |
+| `--settle_time` | 2.0 | Wait time before/after each test |
+| `--sample_interval` | 0.01 | Sample interval (seconds, default 100Hz) |
+
+**What it measures:**
+
+- Rise time (90%, 95%, 98%)
+- Overshoot percentage
+- Steady-state error
+- Peak velocity and current
+
+**Output comparison table** (when sweeping KP values):
+
+```
+  KP Comparison
+  KP   Rise90    Rise95   Overshoot    SS_err  PeakCur
+  ────────────────────────────────────────────────────────
+  13     0.42s     0.58s       2.1%     1.23°    0.842A
+  30     0.21s     0.28s       8.3%     0.41°    1.523A
+  50     0.14s     0.18s      15.7%     0.22°    2.104A
+```
+
+**How to use:** Pick the real KP whose rise time and overshoot most closely match what `MuJoCo <position kp=XX>` produces in simulation, then set the XML kp to that value.
+
+### Typical Workflow
+
+1. **Record walking data** on the duck with `diagnostic_record.py`
+2. **Analyze** the pkl with `analyze_diagnostic.py` to identify the gap
+3. **Test individual servos** with `servo_step_response.py` to find real actuator parameters
+4. **Update MuJoCo XML** actuator params to match real measurements
+5. **Retrain** the policy with corrected simulation
