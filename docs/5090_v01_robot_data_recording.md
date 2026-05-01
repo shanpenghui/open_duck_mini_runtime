@@ -4,10 +4,16 @@
 
 ## 启动方式
 
-默认模型是 `5090_v0.1` 最后一个 321M ONNX：
+默认模型路径是 runtime 根目录下的 `WALK_5090_V01_321M.onnx`。部署前先把 `5090_v0.1` 最后一个 321M ONNX 复制到真机 runtime 根目录：
 
 ```bash
-cd ~/Documents/0-duck/open_duck_mini_runtime
+cp /path/to/2026_04_30_135836_321126400.onnx WALK_5090_V01_321M.onnx
+```
+
+启动采集：
+
+```bash
+cd ~/Open_Duck_Mini_Runtime
 
 python scripts/record_5090_v01_robot_trial.py \
   --duck_config_path duck_config.json \

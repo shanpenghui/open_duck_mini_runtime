@@ -27,8 +27,7 @@ HOME_DIR = os.path.expanduser("~")
 make_action_dict = None
 RLWalk = None
 DEFAULT_5090_V01_ONNX = (
-    "/home/nano/Documents/0-duck/open_duck_playground_5090_train/"
-    "model_registry/5090_v0.1/onnx/2026_04_30_135836_321126400.onnx"
+    str(REPO_DIR / "WALK_5090_V01_321M.onnx")
 )
 
 
@@ -337,10 +336,10 @@ def run_trial(
             aborted = True
             break
 
-        update_phase(robot)
         obs = robot.get_obs()
         if obs is None:
             continue
+        update_phase(robot)
         action, target, target_delta = infer_and_apply(robot, obs)
         if step % power_period_steps == 0:
             voltages, currents = read_power(robot)
