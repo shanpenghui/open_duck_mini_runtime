@@ -44,6 +44,17 @@ min_motor_voltage=6.5
 power_log_interval=1.0
 ```
 
+When `start` is used with Xbox commands enabled, the helper waits for
+`/dev/input/js0` instead of exiting immediately. By default it waits forever,
+which is useful for boot-time startup. The wait behavior can be adjusted with:
+
+```bash
+DUCK_WAIT_CONTROLLER=1 DUCK_WAIT_CONTROLLER_TIMEOUT=0 ./run_duck.sh start
+```
+
+Set `DUCK_WAIT_CONTROLLER_TIMEOUT` to a positive number of seconds if you want
+startup to fail after a fixed wait.
+
 Before `start`, `check` should show the Xbox controller as paired, bonded,
 trusted, connected, and available as `/dev/input/js0`:
 
@@ -61,6 +72,36 @@ must also be paired and bonded before Linux registers it as an input device.
 
 The `stop` command disables torque directly through `rustypot`, without loading
 the walking policy or ONNX runtime.
+
+### Boot Autostart
+
+The repository includes a systemd service template at:
+
+```bash
+deploy/open-duck-runtime.service
+```
+
+Install and enable it on the robot:
+
+```bash
+cd ~/open_duck_mini_runtime
+sudo cp deploy/open-duck-runtime.service /etc/systemd/system/open-duck-runtime.service
+sudo systemctl daemon-reload
+sudo systemctl enable open-duck-runtime.service
+sudo systemctl start open-duck-runtime.service
+```
+
+Check or control the service:
+
+```bash
+systemctl status open-duck-runtime.service
+journalctl -u open-duck-runtime.service -f
+sudo systemctl stop open-duck-runtime.service
+sudo systemctl disable open-duck-runtime.service
+```
+
+The service runs as user `duck`, waits for the Xbox controller, and then starts
+the normal runtime through `run_duck.sh start`.
 
 ## Camera V2 Arrow Vision Control
 

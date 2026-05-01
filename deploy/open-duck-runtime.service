@@ -1,0 +1,19 @@
+[Unit]
+Description=Open Duck Mini walking runtime
+After=bluetooth.service network-online.target
+Wants=bluetooth.service network-online.target
+
+[Service]
+Type=simple
+User=duck
+WorkingDirectory=/home/duck/open_duck_mini_runtime
+Environment=DUCK_WAIT_CONTROLLER=1
+Environment=DUCK_WAIT_CONTROLLER_TIMEOUT=0
+ExecStart=/home/duck/open_duck_mini_runtime/run_duck.sh start
+ExecStop=/home/duck/open_duck_mini_runtime/run_duck.sh stop
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
