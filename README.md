@@ -1,5 +1,67 @@
 # Open Duck Mini Runtime
 
+## Robot Runtime Helper
+
+On the robot, use the local helper script instead of typing the full runtime
+command each time:
+
+```bash
+cd ~
+./run_duck.sh check
+./run_duck.sh start
+./run_duck.sh status
+./run_duck.sh log
+./run_duck.sh stop
+```
+
+The same script is also installed at:
+
+```bash
+~/open_duck_mini_runtime/run_duck.sh
+```
+
+Commands:
+
+```text
+start           Start with Xbox controller commands enabled.
+start-headless  Start without Xbox controller commands.
+stop            Stop the runtime and turn motor torque off.
+restart         Stop, then start.
+status          Show process status and recent logs.
+log             Follow /tmp/duck.log.
+check           Check files, hardware nodes, and Xbox pairing status.
+voltage         Read servo bus voltage/current.
+```
+
+The helper defaults to the conservative runtime profile:
+
+```text
+control_freq=50
+kp=22
+kd=0
+action_scale=0.2
+min_motor_voltage=6.5
+power_log_interval=1.0
+```
+
+Before `start`, `check` should show the Xbox controller as paired, bonded,
+trusted, connected, and available as `/dev/input/js0`:
+
+```text
+[OK] joystick: /dev/input/js0
+Paired: yes
+Bonded: yes
+Trusted: yes
+Connected: yes
+```
+
+If Bluetooth says `Connected: yes` but `/dev/input/js0` is missing, remove and
+pair the controller again. `Connected: yes` alone is not enough; the controller
+must also be paired and bonded before Linux registers it as an input device.
+
+The `stop` command disables torque directly through `rustypot`, without loading
+the walking policy or ONNX runtime.
+
 ## Camera V2 Arrow Vision Control
 
 This branch adds Raspberry Pi Camera V2 arrow-recognition helpers for the
