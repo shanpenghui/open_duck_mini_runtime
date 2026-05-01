@@ -1,5 +1,110 @@
 # Open Duck Mini Runtime
 
+## Robot Runtime Helper
+
+On the robot, use the local helper script instead of typing the full runtime
+command each time:
+
+```bash
+cd ~
+./run_duck.sh check
+./run_duck.sh start
+./run_duck.sh status
+./run_duck.sh log
+./run_duck.sh stop
+```
+
+The same script is also installed at:
+
+```bash
+~/open_duck_mini_runtime/run_duck.sh
+```
+
+Commands:
+
+```text
+start             Start with Xbox controller commands enabled.
+start-headless    Start without Xbox controller commands.
+start-foreground  Start in the foreground for systemd.
+stop              Stop the runtime and turn motor torque off.
+restart           Stop, then start.
+status            Show process status and recent logs.
+log               Follow /tmp/duck.log.
+check             Check files, hardware nodes, and Xbox pairing status.
+voltage           Read servo bus voltage/current.
+```
+
+The helper defaults to:
+
+```text
+control_freq=50
+kp=22
+kd=0
+action_scale=0.2
+min_motor_voltage=6.5
+power_log_interval=1.0
+```
+
+When `start` or `start-foreground` uses Xbox commands, the helper waits for
+`/dev/input/js0` instead of exiting immediately. By default it waits forever,
+which is useful for boot-time startup. The wait behavior can be adjusted with:
+
+```bash
+DUCK_WAIT_CONTROLLER=1 DUCK_WAIT_CONTROLLER_TIMEOUT=0 ./run_duck.sh start
+```
+
+Set `DUCK_WAIT_CONTROLLER_TIMEOUT` to a positive number of seconds if startup
+should fail after a fixed wait.
+
+Before starting, `check` should show the Xbox controller as paired, bonded,
+trusted, connected, and available as `/dev/input/js0`:
+
+```text
+[OK] joystick: /dev/input/js0
+Paired: yes
+Bonded: yes
+Trusted: yes
+Connected: yes
+```
+
+If Bluetooth says `Connected: yes` but `/dev/input/js0` is missing, remove and
+pair the controller again. `Connected: yes` alone is not enough; the controller
+must also be paired and bonded before Linux registers it as an input device.
+
+The `stop` command disables torque directly through `rustypot`, without loading
+the walking policy or ONNX runtime.
+
+### Boot Autostart
+
+The repository includes a systemd service template:
+
+```bash
+deploy/open-duck-runtime.service
+```
+
+Install and enable it on the robot:
+
+```bash
+cd ~/open_duck_mini_runtime
+sudo cp deploy/open-duck-runtime.service /etc/systemd/system/open-duck-runtime.service
+sudo systemctl daemon-reload
+sudo systemctl enable open-duck-runtime.service
+sudo systemctl start open-duck-runtime.service
+```
+
+Check or control the service:
+
+```bash
+systemctl status open-duck-runtime.service
+journalctl -u open-duck-runtime.service -f
+sudo systemctl stop open-duck-runtime.service
+sudo systemctl disable open-duck-runtime.service
+```
+
+The service runs as user `duck`, waits for the Xbox controller, then starts the
+normal runtime through `run_duck.sh start-foreground`. Keeping the runtime in
+the foreground lets systemd track the Python process directly.
+
 ## Camera V2 Arrow Vision Control
 
 This branch adds Raspberry Pi Camera V2 arrow-recognition helpers for the
