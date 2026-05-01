@@ -14,9 +14,6 @@ KD="${DUCK_KD:-0}"
 ACTION_SCALE="${DUCK_ACTION_SCALE:-0.2}"
 MIN_MOTOR_VOLTAGE="${DUCK_MIN_MOTOR_VOLTAGE:-6.5}"
 POWER_LOG_INTERVAL="${DUCK_POWER_LOG_INTERVAL:-1.0}"
-WAIT_CONTROLLER="${DUCK_WAIT_CONTROLLER:-1}"
-WAIT_CONTROLLER_TIMEOUT="${DUCK_WAIT_CONTROLLER_TIMEOUT:-0}"
-WAIT_CONTROLLER_INTERVAL="${DUCK_WAIT_CONTROLLER_INTERVAL:-2}"
 
 export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-dummy}"
 export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-dummy}"
@@ -38,7 +35,6 @@ Commands:
 
 Environment overrides:
   DUCK_MIN_MOTOR_VOLTAGE=6.5 DUCK_KP=22 DUCK_ACTION_SCALE=0.2
-  DUCK_WAIT_CONTROLLER=1 DUCK_WAIT_CONTROLLER_TIMEOUT=0
 EOF
 }
 
@@ -83,28 +79,6 @@ check_duck() {
     bluetoothctl info C0:D6:D5:E9:D7:19 2>/dev/null | sed -n '/Paired:/p;/Bonded:/p;/Trusted:/p;/Connected:/p' || true
 }
 
-wait_for_controller() {
-    if [ "$WAIT_CONTROLLER" != "1" ]; then
-        return 0
-    fi
-
-    local waited=0
-    while [ ! -e /dev/input/js0 ]; do
-        if [ "$WAIT_CONTROLLER_TIMEOUT" -gt 0 ] && [ "$waited" -ge "$WAIT_CONTROLLER_TIMEOUT" ]; then
-            echo "[ERROR] /dev/input/js0 missing after ${WAIT_CONTROLLER_TIMEOUT}s." >&2
-            echo "[ERROR] Pair/connect the Xbox controller or use start-headless." >&2
-            return 1
-        fi
-
-        echo "[WAIT] Waiting for Xbox controller at /dev/input/js0 (${waited}s)."
-        bluetoothctl info C0:D6:D5:E9:D7:19 2>/dev/null | sed -n '/Paired:/p;/Bonded:/p;/Trusted:/p;/Connected:/p' || true
-        sleep "$WAIT_CONTROLLER_INTERVAL"
-        waited=$((waited + WAIT_CONTROLLER_INTERVAL))
-    done
-
-    echo "[OK] joystick: /dev/input/js0"
-}
-
 stop_duck() {
     local pids
     pids="$(runtime_pids)"
@@ -136,8 +110,9 @@ start_duck() {
         exit 1
     fi
 
-    if [ "$commands_flag" = "--commands" ]; then
-        wait_for_controller
+    if [ "$commands_flag" = "--commands" ] && [ ! -e /dev/input/js0 ]; then
+        echo "[ERROR] /dev/input/js0 missing. Pair/connect the Xbox controller or use start-headless." >&2
+        exit 1
     fi
 
     : > "$LOG_FILE"
