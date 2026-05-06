@@ -50,6 +50,8 @@ from mini_bdx_runtime.feet_contacts import FeetContacts
 from mini_bdx_runtime.rl_utils import make_action_dict
 from mini_bdx_runtime.duck_config import DuckConfig
 from mini_bdx_runtime.poly_reference_motion import PolyReferenceMotion
+from mini_bdx_runtime.keyboard_controller import KeyboardController
+from mini_bdx_runtime.xbox_controller import XBoxController
 
 
 def main():
@@ -68,6 +70,17 @@ def main():
                         help="Constant forward velocity command (m/s)")
     parser.add_argument("--command_vel_y", type=float, default=0.0)
     parser.add_argument("--command_yaw", type=float, default=0.0)
+    parser.add_argument(
+        "--commands",
+        action="store_true",
+        help="Record while taking commands from the selected command source.",
+    )
+    parser.add_argument(
+        "--command_source",
+        choices=("xbox", "keyboard"),
+        default="xbox",
+        help="Command source used when --commands is set.",
+    )
     parser.add_argument("--output", type=str, default=None,
                         help="Output pkl path (auto-generated if omitted)")
     parser.add_argument("--pitch_bias", type=float, default=0)
@@ -119,6 +132,14 @@ def main():
     prm_path = os.path.join(_REPO_DIR, "scripts", "polynomial_coefficients.pkl")
     prm = PolyReferenceMotion(prm_path)
 
+    command_controller = None
+    if args.commands:
+        print(f"[INIT] Starting {args.command_source} command source...")
+        if args.command_source == "keyboard":
+            command_controller = KeyboardController(args.control_freq)
+        else:
+            command_controller = XBoxController(args.control_freq)
+
     # ── State ─────────────────────────────────────────────────────────
     last_action = np.zeros(num_dofs)
     last_last_action = np.zeros(num_dofs)
@@ -146,6 +167,7 @@ def main():
         "imu_accel": [],             # (N, 3) m/s²
         # Foot contacts
         "feet_contacts": [],         # (N, 2) bool
+        "commands": [],              # (N, 7) active command sent to policy
         # Timing
         "loop_time_ms": [],          # (N,) ms per loop iteration
         "obs_build_time_ms": [],     # (N,) ms to build obs
@@ -164,6 +186,8 @@ def main():
         "command_vel_x": args.command_vel_x,
         "command_vel_y": args.command_vel_y,
         "command_yaw": args.command_yaw,
+        "commands_enabled": args.commands,
+        "command_source": args.command_source if args.commands else "constant",
         "duration_planned": args.duration,
         "init_pos": init_pos,
         "joint_names": list(hwi.joints.keys()),
@@ -171,8 +195,9 @@ def main():
         "duck_weight_kg": "2.2",  # user-provided
     }
 
-    # Constant command
-    cmd = [
+    # Constant fallback command. When --commands is used this is replaced every
+    # step by the selected command source.
+    constant_cmd = [
         args.command_vel_x,  # lin_vel_x
         args.command_vel_y,  # lin_vel_y
         args.command_yaw,    # ang_vel_yaw
@@ -181,10 +206,14 @@ def main():
         0.0,                 # head_yaw
         0.0,                 # head_roll
     ]
+    cmd = constant_cmd.copy()
 
     print(f"\n{'='*60}")
     print(f"[REC] Recording {args.duration}s at {args.control_freq}Hz")
-    print(f"[REC] Command: vx={args.command_vel_x}, vy={args.command_vel_y}, yaw={args.command_yaw}")
+    if args.commands:
+        print(f"[REC] Command source: {args.command_source}")
+    else:
+        print(f"[REC] Command: vx={args.command_vel_x}, vy={args.command_vel_y}, yaw={args.command_yaw}")
     print(f"[REC] action_scale={args.action_scale}, pid={args.pid}")
     print(f"[REC] Output: {args.output}")
     print(f"{'='*60}")
@@ -228,6 +257,11 @@ def main():
                 continue
 
             feet = feet_contacts.get()
+            if command_controller is not None:
+                cmd, _, _, _ = command_controller.get_last_command()
+                cmd = list(cmd)
+            else:
+                cmd = constant_cmd.copy()
 
             # Imitation phase
             imitation_i += 1
@@ -299,6 +333,7 @@ def main():
             rec["imu_gyro"].append(gyro.copy())
             rec["imu_accel"].append(accel.copy())
             rec["feet_contacts"].append(feet.copy())
+            rec["commands"].append(np.array(cmd).copy())
             rec["loop_time_ms"].append(loop_ms)
             rec["obs_build_time_ms"].append(obs_build_ms)
             rec["infer_time_ms"].append(infer_ms)
