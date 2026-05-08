@@ -1,0 +1,113 @@
+{
+  "trial_idx": 1,
+  "aborted": true,
+  "started_at": "2026-05-08T12:43:54+0800",
+  "onnx_model_path": "2026_05_08_105009_65536000.onnx",
+  "model_tag": "2026_05_08_105009_65536000",
+  "action_scale": 0.12,
+  "control_freq": 50,
+  "pid": [
+    22,
+    0,
+    0
+  ],
+  "pitch_bias": 0.0,
+  "init_pos": [
+    0.002,
+    0.053,
+    -0.63,
+    1.368,
+    -0.784,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.003,
+    -0.065,
+    0.635,
+    1.379,
+    -0.796
+  ],
+  "joint_names": [
+    "left_hip_yaw",
+    "left_hip_roll",
+    "left_hip_pitch",
+    "left_knee",
+    "left_ankle",
+    "neck_pitch",
+    "head_pitch",
+    "head_yaw",
+    "head_roll",
+    "right_hip_yaw",
+    "right_hip_roll",
+    "right_hip_pitch",
+    "right_knee",
+    "right_ankle"
+  ],
+  "notes": "2026_05_08_105009_65536000 scale 0.12",
+  "sequence": [
+    {
+      "name": "stand_pre",
+      "duration": 2.0,
+      "cmd_x": 0.0,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    },
+    {
+      "name": "forward_005",
+      "duration": 6.0,
+      "cmd_x": 0.05,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    },
+    {
+      "name": "stop_after_005",
+      "duration": 2.0,
+      "cmd_x": 0.0,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    },
+    {
+      "name": "forward_010",
+      "duration": 8.0,
+      "cmd_x": 0.1,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    },
+    {
+      "name": "stop_after_010",
+      "duration": 2.0,
+      "cmd_x": 0.0,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    },
+    {
+      "name": "forward_015",
+      "duration": 10.0,
+      "cmd_x": 0.15,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    },
+    {
+      "name": "stand_post",
+      "duration": 3.0,
+      "cmd_x": 0.0,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    }
+  ],
+  "samples": 700,
+  "duration_s": 14.275428295135498,
+  "mean_loop_dt_s": 0.020393468993050713,
+  "missed_deadline_frac": 0.0014285714285714286,
+  "max_action_abs": 0.9927099943161011,
+  "mean_action_saturation_frac": 0.02163265306122449,
+  "max_target_delta_abs": 0.16812193393707275,
+  "min_voltage": 6.8,
+  "max_sum_abs_current": 3.3659999999999997,
+  "files": {
+    "csv": "robot_logs/2026_05_08_105009_65536000_scale_0p2/20260508_124311/trial_001.csv",
+    "npz": "robot_logs/2026_05_08_105009_65536000_scale_0p2/20260508_124311/trial_001.npz",
+    "json": "robot_logs/2026_05_08_105009_65536000_scale_0p2/20260508_124311/trial_001.json"
+  }
+}
