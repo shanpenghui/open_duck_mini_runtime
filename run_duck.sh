@@ -5,7 +5,7 @@ APP_DIR="${DUCK_APP_DIR:-/home/duck/open_duck_mini_runtime}"
 PYTHON="${DUCK_PYTHON:-/home/duck/.venv/bin/python}"
 LOG_FILE="${DUCK_LOG_FILE:-/tmp/duck.log}"
 PID_FILE="${DUCK_PID_FILE:-/tmp/duck_walk.pid}"
-MODEL="${DUCK_ONNX_MODEL:-BEST_WALK_ONNX_2.onnx}"
+MODEL="${DUCK_ONNX_MODEL:-WALK_BDXR_INSPIRED_272M.onnx}"
 CONFIG="${DUCK_CONFIG:-$APP_DIR/duck_config.json}"
 
 CONTROL_FREQ="${DUCK_CONTROL_FREQ:-50}"

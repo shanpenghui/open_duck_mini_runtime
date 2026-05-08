@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record fixed-command real-robot trials for the 5090_v0.1 walking model.
+"""Record fixed-command real-robot trials for the BDXR-inspired walking model.
 
 The robot starts in a paused hold state. Press Xbox A to run one scripted
 sequence. The script returns to the paused hold state after the sequence and
@@ -26,9 +26,7 @@ sys.path.insert(0, str(REPO_DIR / "mini_bdx_runtime"))
 HOME_DIR = os.path.expanduser("~")
 make_action_dict = None
 RLWalk = None
-DEFAULT_5090_V01_ONNX = (
-    str(REPO_DIR / "WALK_5090_V01_321M.onnx")
-)
+DEFAULT_BDXR_INSPIRED_ONNX = str(REPO_DIR / "WALK_BDXR_INSPIRED_272M.onnx")
 
 
 def default_sequence() -> list[dict[str, float | str]]:
@@ -409,8 +407,8 @@ def wait_for_a(robot: RLWalk, prompt: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--onnx_model_path", default=DEFAULT_5090_V01_ONNX)
-    parser.add_argument("--model_tag", default="5090_v0.1")
+    parser.add_argument("--onnx_model_path", default=DEFAULT_BDXR_INSPIRED_ONNX)
+    parser.add_argument("--model_tag", default="bdxr_inspired_272m")
     parser.add_argument("--duck_config_path", default=f"{HOME_DIR}/duck_config.json")
     parser.add_argument("--serial_port", default="/dev/ttyACM0")
     parser.add_argument("-a", "--action_scale", type=float, default=0.2)
@@ -423,7 +421,7 @@ def main() -> int:
     parser.add_argument("--min_motor_voltage", type=float, default=6.8)
     parser.add_argument("--power_sample_hz", type=float, default=5.0)
     parser.add_argument("--sequence_json", default=None)
-    parser.add_argument("--output_dir", default=str(REPO_DIR / "robot_logs" / "5090_v0.1"))
+    parser.add_argument("--output_dir", default=str(REPO_DIR / "robot_logs" / "bdxr_inspired_272m"))
     parser.add_argument("--trials", type=int, default=0, help="0 means keep waiting for A after each trial")
     parser.add_argument("--notes", default="")
     args = parser.parse_args()
