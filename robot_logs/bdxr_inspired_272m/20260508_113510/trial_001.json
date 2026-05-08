@@ -1,0 +1,113 @@
+{
+  "trial_idx": 1,
+  "aborted": true,
+  "started_at": "2026-05-08T11:35:40+0800",
+  "onnx_model_path": "/home/duck/open_duck_mini_runtime/WALK_BDXR_INSPIRED_272M.onnx",
+  "model_tag": "bdxr_inspired_272m",
+  "action_scale": 0.2,
+  "control_freq": 50,
+  "pid": [
+    22,
+    0,
+    0
+  ],
+  "pitch_bias": 0.0,
+  "init_pos": [
+    0.002,
+    0.053,
+    -0.63,
+    1.368,
+    -0.784,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.003,
+    -0.065,
+    0.635,
+    1.379,
+    -0.796
+  ],
+  "joint_names": [
+    "left_hip_yaw",
+    "left_hip_roll",
+    "left_hip_pitch",
+    "left_knee",
+    "left_ankle",
+    "neck_pitch",
+    "head_pitch",
+    "head_yaw",
+    "head_roll",
+    "right_hip_yaw",
+    "right_hip_roll",
+    "right_hip_pitch",
+    "right_knee",
+    "right_ankle"
+  ],
+  "notes": "raspi_192.168.18.158_first_bdxr_collection",
+  "sequence": [
+    {
+      "name": "stand_pre",
+      "duration": 2.0,
+      "cmd_x": 0.0,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    },
+    {
+      "name": "forward_005",
+      "duration": 6.0,
+      "cmd_x": 0.05,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    },
+    {
+      "name": "stop_after_005",
+      "duration": 2.0,
+      "cmd_x": 0.0,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    },
+    {
+      "name": "forward_010",
+      "duration": 8.0,
+      "cmd_x": 0.1,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    },
+    {
+      "name": "stop_after_010",
+      "duration": 2.0,
+      "cmd_x": 0.0,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    },
+    {
+      "name": "forward_015",
+      "duration": 10.0,
+      "cmd_x": 0.15,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    },
+    {
+      "name": "stand_post",
+      "duration": 3.0,
+      "cmd_x": 0.0,
+      "cmd_y": 0.0,
+      "cmd_yaw": 0.0
+    }
+  ],
+  "samples": 1050,
+  "duration_s": 21.470526218414307,
+  "mean_loop_dt_s": 0.020448120208013624,
+  "missed_deadline_frac": 0.0009523809523809524,
+  "max_action_abs": 0.9972459673881531,
+  "mean_action_saturation_frac": 0.03612244897959184,
+  "max_target_delta_abs": 0.3267664164304733,
+  "min_voltage": 6.1,
+  "max_sum_abs_current": 5.361,
+  "files": {
+    "csv": "/home/duck/open_duck_mini_runtime/robot_logs/bdxr_inspired_272m/20260508_113510/trial_001.csv",
+    "npz": "/home/duck/open_duck_mini_runtime/robot_logs/bdxr_inspired_272m/20260508_113510/trial_001.npz",
+    "json": "/home/duck/open_duck_mini_runtime/robot_logs/bdxr_inspired_272m/20260508_113510/trial_001.json"
+  }
+}
