@@ -1,5 +1,6 @@
 import time
 import pickle
+import subprocess
 
 import numpy as np
 from mini_bdx_runtime.rustypot_position_hwi import HWI
@@ -47,11 +48,12 @@ class RLWalk:
             save_obs=False,
             replay_obs=None,
             cutoff_frequency=None,
-            min_motor_voltage=6.8,
+            min_motor_voltage=6.3,
             power_log_interval=0.0,
     ):
 
         self.duck_config = DuckConfig(config_json_path=duck_config_path)
+        self.shutdown_requested = False
 
         self.commands = commands
         self.command_source = "none" if not commands else command_source
@@ -287,6 +289,29 @@ class RLWalk:
 
         return freq
 
+    def disconnect_shutdown_controller(self):
+        if self.command_controller is not None and hasattr(self.command_controller, "disconnect_bluetooth"):
+            ok = self.command_controller.disconnect_bluetooth()
+            if not ok:
+                print("[SHUTDOWN][WARN] bluetoothctl disconnect failed; continuing shutdown.")
+
+    def request_poweroff(self):
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "systemctl", "poweroff"],
+                text=True,
+                capture_output=True,
+                timeout=10,
+            )
+            if result.stdout.strip():
+                print(result.stdout.strip())
+            if result.stderr.strip():
+                print(result.stderr.strip())
+            if result.returncode != 0:
+                print(f"[SHUTDOWN][ERROR] systemctl poweroff failed with code {result.returncode}")
+        except Exception as exc:
+            print(f"[SHUTDOWN][ERROR] Failed to request poweroff: {exc}")
+
     def run(self):
         i = 0
         try:
@@ -301,6 +326,15 @@ class RLWalk:
                     self.last_commands, self.buttons, left_trigger, right_trigger = (
                         self.command_controller.get_last_command()
                     )
+                    if (
+                        hasattr(self.command_controller, "get_shutdown_requested")
+                        and self.command_controller.get_shutdown_requested()
+                    ):
+                        self.shutdown_requested = True
+                        print("[SHUTDOWN] Xbox button 15 held for 7.0s; disconnecting controller and powering off.")
+                        self.disconnect_shutdown_controller()
+                        break
+
                     # if i % 20 == 0:
                     #     print(f"[CMD] lin_x={self.last_commands[0]:.3f}, lin_y={self.last_commands[1]:.3f}, yaw={self.last_commands[2]:.3f}")
 
@@ -480,6 +514,9 @@ class RLWalk:
                 self.command_controller.close()
             self.hwi.turn_off()
 
+        if self.shutdown_requested:
+            self.request_poweroff()
+
         if self.save_obs:
             pickle.dump(self.saved_obs, open("robot_saved_obs.pkl", "wb"))
         print("TURNING OFF")
@@ -535,7 +572,7 @@ if __name__ == "__main__":
         help="replay the observations from a previous run (can be from the robot or from mujoco)",
     )
     parser.add_argument("--cutoff_frequency", type=float, default=None)
-    parser.add_argument("--min_motor_voltage", type=float, default=6.8)
+    parser.add_argument("--min_motor_voltage", type=float, default=6.3)
     parser.add_argument(
         "--power_log_interval",
         type=float,

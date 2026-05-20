@@ -41,7 +41,7 @@ control_freq=50
 kp=22
 kd=0
 action_scale=0.2
-min_motor_voltage=6.8
+min_motor_voltage=6.3
 power_log_interval=1.0
 ```
 
@@ -102,7 +102,7 @@ python -u scripts/v2_rl_walk_mujoco.py \
   --duck_config_path ~/open_duck_mini_runtime/duck_config.json \
   --commands -c 50 -p 22 -d 0 \
   --action_scale 0.2 \
-  --min_motor_voltage 6.8
+  --min_motor_voltage 6.3
 ```
 
 Before the walking policy starts, `run_duck.sh` performs preflight checks. If a
@@ -165,6 +165,33 @@ Disable boot autostart:
 
 ```bash
 sudo systemctl disable open-duck-runtime.service
+```
+
+
+### Xbox button 15 safe poweroff
+
+During runtime, holding Xbox controller button 15 for 7 seconds requests a safe
+Raspberry Pi shutdown. This is handled from the main control loop instead of the
+joystick worker thread.
+
+Shutdown sequence:
+
+1. The runtime prints a `[SHUTDOWN]` log message.
+2. The Xbox Bluetooth controller is disconnected with `bluetoothctl disconnect`.
+3. The control loop exits normally.
+4. The `finally` block calls `hwi.turn_off()` to disable motor torque.
+5. The runtime runs `sudo -n systemctl poweroff`.
+
+The poweroff command requires a minimal sudoers rule:
+
+```text
+duck ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
+```
+
+Install it as `/etc/sudoers.d/duck-poweroff` and validate it with:
+
+```bash
+sudo visudo -cf /etc/sudoers.d/duck-poweroff
 ```
 
 Useful environment overrides supported by `run_duck.sh` and the service:
@@ -465,7 +492,7 @@ This expands to:
 /home/duck/.venv/bin/python -u scripts/v2_rl_walk_mujoco.py \
   --onnx_model_path BEST_WALK_ONNX_2.onnx \
   --duck_config_path /home/duck/open_duck_mini_runtime/duck_config.json \
-  --commands -c 50 -p 22 -d 0 --action_scale 0.2 --min_motor_voltage 6.8
+  --commands -c 50 -p 22 -d 0 --action_scale 0.2 --min_motor_voltage 6.3
 ```
 
 Use a headless startup check when no Xbox controller is connected:
@@ -510,7 +537,7 @@ python -u scripts/v2_rl_walk_mujoco.py \
   --onnx_model_path BEST_WALK_ONNX_2.onnx \
   --duck_config_path ~/open_duck_mini_runtime/duck_config.json \
   --commands -c 50 -p 22 -d 0 --action_scale 0.2 \
-  --min_motor_voltage 6.8 --power_log_interval 1.0
+  --min_motor_voltage 6.3 --power_log_interval 1.0
 ```
 
 The current values are converted from STS3215 feedback raw units using 6.5mA per unit.
@@ -523,7 +550,7 @@ source ~/.venv/bin/activate
 python -u scripts/v2_rl_walk_mujoco.py \
   --onnx_model_path BEST_WALK_ONNX_2.onnx \
   --duck_config_path ~/open_duck_mini_runtime/duck_config.json \
-  --commands -c 50 -p 22 -d 0 --action_scale 0.2 --min_motor_voltage 6.8
+  --commands -c 50 -p 22 -d 0 --action_scale 0.2 --min_motor_voltage 6.3
 ```
 
 ### Keyboard control on the duck
@@ -538,7 +565,7 @@ python -u scripts/v2_rl_walk_mujoco.py \
   --duck_config_path ~/open_duck_mini_runtime/duck_config.json \
   --commands --command_source keyboard \
   -c 50 -p 22 -d 0 --action_scale 0.2 \
-  --min_motor_voltage 6.5 --power_log_interval 1.0
+  --min_motor_voltage 6.3 --power_log_interval 1.0
 ```
 
 Keyboard mapping:

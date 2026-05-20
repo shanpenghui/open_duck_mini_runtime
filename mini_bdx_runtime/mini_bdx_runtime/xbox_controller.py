@@ -1,4 +1,5 @@
 import pygame
+import subprocess
 from threading import Thread
 from queue import Queue
 import time
@@ -20,10 +21,22 @@ HEAD_ROLL_RANGE = [-0.5, 0.5]
 
 
 class XBoxController:
-    def __init__(self, command_freq, only_head_control=False):
+    def __init__(
+        self,
+        command_freq,
+        only_head_control=False,
+        shutdown_button_id=15,
+        shutdown_hold_seconds=7.0,
+        bluetooth_address="91:B4:9E:A2:3C:ED",
+    ):
         self.command_freq = command_freq
         self.head_control_mode = only_head_control
         self.only_head_control = only_head_control
+        self.shutdown_button_id = shutdown_button_id
+        self.shutdown_hold_seconds = float(shutdown_hold_seconds)
+        self.bluetooth_address = bluetooth_address
+        self.shutdown_button_started_at = None
+        self.shutdown_requested = False
 
         self.last_commands = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         self.last_left_trigger = 0.0
@@ -179,6 +192,19 @@ class XBoxController:
             #     if self.p1.get_button(i):
             #         print(f"Button {i} pressed")
 
+        shutdown_pressed = False
+        if self.shutdown_button_id < self.p1.get_numbuttons():
+            shutdown_pressed = bool(self.p1.get_button(self.shutdown_button_id))
+
+        now = time.monotonic()
+        if shutdown_pressed and not self.shutdown_requested:
+            if self.shutdown_button_started_at is None:
+                self.shutdown_button_started_at = now
+            elif now - self.shutdown_button_started_at >= self.shutdown_hold_seconds:
+                self.shutdown_requested = True
+        elif not shutdown_pressed:
+            self.shutdown_button_started_at = None
+
         up_down = self.p1.get_hat(0)[1]
         pygame.event.pump()  # process event queue
 
@@ -239,6 +265,31 @@ class XBoxController:
             self.last_left_trigger,
             self.last_right_trigger,
         )
+
+    def get_shutdown_requested(self):
+        return self.shutdown_requested
+
+    def disconnect_bluetooth(self):
+        try:
+            result = subprocess.run(
+                ["bluetoothctl", "disconnect", self.bluetooth_address],
+                text=True,
+                capture_output=True,
+                timeout=5,
+            )
+            if result.stdout.strip():
+                print(result.stdout.strip())
+            if result.stderr.strip():
+                print(result.stderr.strip())
+            return result.returncode == 0
+        except Exception as exc:
+            print(f"[SHUTDOWN][WARN] Failed to disconnect Xbox bluetooth: {exc}")
+            return False
+
+    def close(self):
+        pygame.joystick.quit()
+        pygame.quit()
+
 
 if __name__ == "__main__":
     controller = XBoxController(20)
