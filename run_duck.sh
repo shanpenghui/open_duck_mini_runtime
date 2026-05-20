@@ -7,12 +7,16 @@ LOG_FILE="${DUCK_LOG_FILE:-/tmp/duck.log}"
 PID_FILE="${DUCK_PID_FILE:-/tmp/duck_walk.pid}"
 MODEL="${DUCK_ONNX_MODEL:-BEST_WALK_ONNX_2.onnx}"
 CONFIG="${DUCK_CONFIG:-$APP_DIR/duck_config.json}"
+XBOX_ADDRESS="${DUCK_XBOX_ADDRESS:-91:B4:9E:A2:3C:ED}"
+BNO_I2C_BUS="${DUCK_BNO_I2C_BUS:-1}"
+BNO_I2C_ADDR="${DUCK_BNO_I2C_ADDR:-0x28}"
+I2CDETECT="${DUCK_I2CDETECT:-/usr/sbin/i2cdetect}"
 
 CONTROL_FREQ="${DUCK_CONTROL_FREQ:-50}"
 KP="${DUCK_KP:-22}"
 KD="${DUCK_KD:-0}"
 ACTION_SCALE="${DUCK_ACTION_SCALE:-0.2}"
-MIN_MOTOR_VOLTAGE="${DUCK_MIN_MOTOR_VOLTAGE:-6.5}"
+MIN_MOTOR_VOLTAGE="${DUCK_MIN_MOTOR_VOLTAGE:-6.8}"
 POWER_LOG_INTERVAL="${DUCK_POWER_LOG_INTERVAL:-1.0}"
 WAIT_CONTROLLER="${DUCK_WAIT_CONTROLLER:-1}"
 WAIT_CONTROLLER_TIMEOUT="${DUCK_WAIT_CONTROLLER_TIMEOUT:-0}"
@@ -38,7 +42,7 @@ Commands:
   voltage         Read servo bus voltage/current.
 
 Environment overrides:
-  DUCK_MIN_MOTOR_VOLTAGE=6.5 DUCK_KP=22 DUCK_ACTION_SCALE=0.2
+  DUCK_MIN_MOTOR_VOLTAGE=6.8 DUCK_KP=22 DUCK_ACTION_SCALE=0.2
   DUCK_WAIT_CONTROLLER=1 DUCK_WAIT_CONTROLLER_TIMEOUT=0
 EOF
 }
@@ -57,6 +61,43 @@ ensure_app() {
         echo "[ERROR] duck_config.json not found: $CONFIG" >&2
         exit 1
     fi
+    if [ ! -f "$APP_DIR/scripts/v2_rl_walk_mujoco.py" ]; then
+        echo "[ERROR] runtime script not found: $APP_DIR/scripts/v2_rl_walk_mujoco.py" >&2
+        exit 1
+    fi
+}
+
+check_bno055() {
+    local dev="/dev/i2c-${BNO_I2C_BUS}"
+    if [ ! -e "$dev" ]; then
+        echo "[ERROR] BNO055 I2C device missing: $dev" >&2
+        return 1
+    fi
+    if [ ! -x "$I2CDETECT" ]; then
+        I2CDETECT="$(command -v i2cdetect || true)"
+    fi
+    if [ -z "$I2CDETECT" ] || [ ! -x "$I2CDETECT" ]; then
+        echo "[ERROR] i2cdetect not found; install i2c-tools." >&2
+        return 1
+    fi
+
+    local scan
+    scan="$($I2CDETECT -y "$BNO_I2C_BUS")"
+    if echo "$scan" | grep -Eiq "(^|[[:space:]])(28|UU)([[:space:]]|$)"; then
+        echo "[OK] BNO055: $dev address $BNO_I2C_ADDR"
+        return 0
+    fi
+
+    echo "[ERROR] BNO055 not found on I2C bus ${BNO_I2C_BUS} at ${BNO_I2C_ADDR}." >&2
+    echo "$scan" >&2
+    return 1
+}
+
+check_xbox_ready() {
+    "$PYTHON" "$APP_DIR/scripts/wait_xbox_ready.py" \
+        --address "$XBOX_ADDRESS" \
+        --timeout "${1:-8}" \
+        --connect-timeout 8
 }
 
 runtime_pids() {
@@ -78,10 +119,14 @@ check_duck() {
     ensure_app
     echo "[CHECK] App dir: $APP_DIR"
     echo "[CHECK] Python: $("$PYTHON" --version 2>&1)"
-    [ -e /dev/ttyACM0 ] && echo "[OK] servo bus: /dev/ttyACM0" || echo "[MISSING] servo bus: /dev/ttyACM0"
-    [ -e /dev/i2c-1 ] && echo "[OK] I2C: /dev/i2c-1" || echo "[MISSING] I2C: /dev/i2c-1"
-    [ -e /dev/input/js0 ] && echo "[OK] joystick: /dev/input/js0" || echo "[WARN] joystick missing: /dev/input/js0"
-    bluetoothctl info C0:D6:D5:E9:D7:19 2>/dev/null | sed -n '/Paired:/p;/Bonded:/p;/Trusted:/p;/Connected:/p' || true
+    echo "[CHECK] ONNX model: $APP_DIR/$MODEL"
+    echo "[CHECK] Config: $CONFIG"
+    echo "[CHECK] Runtime script: $APP_DIR/scripts/v2_rl_walk_mujoco.py"
+    check_bno055
+    check_xbox_ready 10
+    [ -e /dev/input/js0 ] && echo "[OK] joystick node: /dev/input/js0" || { echo "[ERROR] joystick node missing: /dev/input/js0" >&2; return 1; }
+    [ -e /dev/ttyACM0 ] && echo "[OK] servo bus: /dev/ttyACM0" || echo "[WARN] servo bus missing: /dev/ttyACM0"
+    bluetoothctl info "$XBOX_ADDRESS" 2>/dev/null | sed -n '/Name:/p;/Paired:/p;/Bonded:/p;/Trusted:/p;/Connected:/p' || true
 }
 
 wait_for_controller() {
@@ -89,21 +134,8 @@ wait_for_controller() {
         return 0
     fi
 
-    local waited=0
-    while [ ! -e /dev/input/js0 ]; do
-        if [ "$WAIT_CONTROLLER_TIMEOUT" -gt 0 ] && [ "$waited" -ge "$WAIT_CONTROLLER_TIMEOUT" ]; then
-            echo "[ERROR] /dev/input/js0 missing after ${WAIT_CONTROLLER_TIMEOUT}s." >&2
-            echo "[ERROR] Pair/connect the Xbox controller or use start-headless." >&2
-            return 1
-        fi
-
-        echo "[WAIT] Waiting for Xbox controller at /dev/input/js0 (${waited}s)."
-        bluetoothctl info C0:D6:D5:E9:D7:19 2>/dev/null | sed -n '/Paired:/p;/Bonded:/p;/Trusted:/p;/Connected:/p' || true
-        sleep "$WAIT_CONTROLLER_INTERVAL"
-        waited=$((waited + WAIT_CONTROLLER_INTERVAL))
-    done
-
-    echo "[OK] joystick: /dev/input/js0"
+    echo "[WAIT] Waiting for Xbox controller $XBOX_ADDRESS (timeout=${WAIT_CONTROLLER_TIMEOUT}s; 0 means forever)."
+    check_xbox_ready "$WAIT_CONTROLLER_TIMEOUT"
 }
 
 stop_duck() {
@@ -128,6 +160,8 @@ stop_duck() {
 start_duck() {
     local commands_flag="$1"
     ensure_app
+
+    check_bno055
 
     local pids
     pids="$(runtime_pids)"
@@ -163,6 +197,8 @@ start_duck() {
 
 start_duck_foreground() {
     ensure_app
+
+    check_bno055
 
     local pids
     pids="$(runtime_pids)"

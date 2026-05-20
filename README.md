@@ -41,7 +41,7 @@ control_freq=50
 kp=22
 kd=0
 action_scale=0.2
-min_motor_voltage=6.5
+min_motor_voltage=6.8
 power_log_interval=1.0
 ```
 
@@ -74,7 +74,7 @@ must also be paired and bonded before Linux registers it as an input device.
 The `stop` command disables torque directly through `rustypot`, without loading
 the walking policy or ONNX runtime.
 
-### Boot Autostart
+### Autostart with systemd
 
 The repository includes a systemd service template:
 
@@ -82,28 +82,102 @@ The repository includes a systemd service template:
 deploy/open-duck-runtime.service
 ```
 
-Install and enable it on the robot:
+When enabled, `open-duck-runtime.service` starts the Open Duck Mini walking
+runtime automatically after boot. The service runs as user `duck`, uses
+`/home/duck/open_duck_mini_runtime` as its working directory, and launches the
+runtime through:
+
+```bash
+/home/duck/open_duck_mini_runtime/run_duck.sh start-foreground
+```
+
+The foreground mode lets systemd track the Python process directly. The walking
+command is equivalent to:
+
+```bash
+cd ~/open_duck_mini_runtime
+source ~/.venv/bin/activate
+python -u scripts/v2_rl_walk_mujoco.py \
+  --onnx_model_path BEST_WALK_ONNX_2.onnx \
+  --duck_config_path ~/open_duck_mini_runtime/duck_config.json \
+  --commands -c 50 -p 22 -d 0 \
+  --action_scale 0.2 \
+  --min_motor_voltage 6.8
+```
+
+Before the walking policy starts, `run_duck.sh` performs preflight checks. If a
+required item is missing, the runtime is not started and a clear error is
+printed to the service log.
+
+Preflight checks:
+
+- Required files:
+  - `BEST_WALK_ONNX_2.onnx`
+  - `duck_config.json`
+  - `~/.venv/bin/python`
+  - `scripts/v2_rl_walk_mujoco.py`
+- BNO055 IMU:
+  - `/dev/i2c-1` must exist.
+  - I2C address `0x28` must be visible with `i2cdetect -y 1`.
+- Xbox controller:
+  - Default Bluetooth address: `91:B4:9E:A2:3C:ED`.
+  - `bluetoothctl info` must report `Connected: yes`.
+  - `pygame` must detect at least one joystick.
+  - `/dev/input/js0` must exist.
+- Servo bus:
+  - `/dev/ttyACM0` should exist.
+
+Install and enable autostart on the robot:
 
 ```bash
 cd ~/open_duck_mini_runtime
 sudo cp deploy/open-duck-runtime.service /etc/systemd/system/open-duck-runtime.service
 sudo systemctl daemon-reload
 sudo systemctl enable open-duck-runtime.service
-sudo systemctl start open-duck-runtime.service
 ```
 
-Check or control the service:
+Run the preflight check before enabling or rebooting:
 
 ```bash
-systemctl status open-duck-runtime.service
+./run_duck.sh check
+```
+
+Check service status:
+
+```bash
+sudo systemctl status open-duck-runtime.service --no-pager
+```
+
+Follow runtime logs:
+
+```bash
 journalctl -u open-duck-runtime.service -f
+```
+
+Start or stop the service manually:
+
+```bash
+sudo systemctl start open-duck-runtime.service
 sudo systemctl stop open-duck-runtime.service
+```
+
+Disable boot autostart:
+
+```bash
 sudo systemctl disable open-duck-runtime.service
 ```
 
-The service runs as user `duck`, waits for the Xbox controller, then starts the
-normal runtime through `run_duck.sh start-foreground`. Keeping the runtime in
-the foreground lets systemd track the Python process directly.
+Useful environment overrides supported by `run_duck.sh` and the service:
+
+- `DUCK_XBOX_ADDRESS`
+- `DUCK_MIN_MOTOR_VOLTAGE`
+- `DUCK_WAIT_CONTROLLER`
+- `DUCK_WAIT_CONTROLLER_TIMEOUT`
+- `DUCK_CONTROL_FREQ`
+- `DUCK_KP`
+- `DUCK_KD`
+- `DUCK_ACTION_SCALE`
+
 
 ## Camera V2 Arrow Vision Control
 

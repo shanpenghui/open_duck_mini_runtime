@@ -9,6 +9,8 @@ User=duck
 WorkingDirectory=/home/duck/open_duck_mini_runtime
 Environment=DUCK_WAIT_CONTROLLER=1
 Environment=DUCK_WAIT_CONTROLLER_TIMEOUT=0
+Environment=DUCK_XBOX_ADDRESS=91:B4:9E:A2:3C:ED
+Environment=DUCK_MIN_MOTOR_VOLTAGE=6.8
 ExecStart=/home/duck/open_duck_mini_runtime/run_duck.sh start-foreground
 ExecStop=/home/duck/open_duck_mini_runtime/run_duck.sh stop
 Restart=on-failure

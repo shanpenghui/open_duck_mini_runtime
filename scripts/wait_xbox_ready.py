@@ -62,7 +62,7 @@ def describe_joysticks() -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--address", default="C0:D6:D5:E9:D7:A9")
+    parser.add_argument("--address", default="91:B4:9E:A2:3C:ED")
     parser.add_argument("--timeout", type=float, default=25.0)
     parser.add_argument("--connect-timeout", type=float, default=10.0)
     args = parser.parse_args()
@@ -70,26 +70,31 @@ def main() -> int:
     run(["sudo", "-n", "modprobe", "hid-xpadneo"], timeout=5)
     run(["sudo", "-n", "modprobe", "hid_xpadneo"], timeout=5)
 
-    deadline = time.monotonic() + args.timeout
+    deadline = None if args.timeout <= 0 else time.monotonic() + args.timeout
     last_status = ""
-    while time.monotonic() < deadline:
-        if not is_connected(args.address):
+    while deadline is None or time.monotonic() < deadline:
+        connected = is_connected(args.address)
+        if not connected:
             run(["bluetoothctl", "connect", args.address], timeout=args.connect_timeout)
+            connected = is_connected(args.address)
 
         js_nodes = sorted(Path("/dev/input").glob("js*"))
+        js0_exists = Path("/dev/input/js0").exists()
         count = joystick_count()
-        if js_nodes and count > 0:
+        if connected and js0_exists and count > 0:
             print("[xbox] ready")
+            print(f"[xbox] bluetooth {args.address}: Connected: yes")
             print("[xbox] nodes:", ", ".join(str(path) for path in js_nodes))
             for description in describe_joysticks():
                 print("[xbox]", description)
             return 0
 
-        info = bluetooth_info(args.address)
-        status = "connected" if "Connected: yes" in info else "not connected"
-        if status != last_status:
-            print(f"[xbox] waiting: bluetooth {status}, pygame joysticks={count}", flush=True)
-            last_status = status
+        status = "connected" if connected else "not connected"
+        node_status = "js0 present" if js0_exists else "js0 missing"
+        current_status = f"bluetooth {status}, {node_status}, pygame joysticks={count}"
+        if current_status != last_status:
+            print(f"[xbox] waiting: {current_status}", flush=True)
+            last_status = current_status
         time.sleep(1.0)
 
     print("[xbox] not ready before timeout", file=sys.stderr)
