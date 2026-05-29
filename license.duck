@@ -1,0 +1,18 @@
+{
+  "payload": {
+    "asset_key": {
+      "encrypted_key": "nghabri5sCnDnxiV_sQRQ2Sj1uKKZXuLWr6eUO8lZQk",
+      "kdf": "pbkdf2-hmac-sha256",
+      "nonce": "o5onwzSgQkb5M-gIwu-6yQ",
+      "rounds": 120000,
+      "salt": "IFlboGRO3y_pHytYvzUvcw",
+      "tag": "o_moAkaep871YRCD7deIjhVOXuCzMVzdLhpx2VOAui4"
+    },
+    "expires_at": null,
+    "issued_at": "2026-05-28T14:41:07+00:00",
+    "machine_fingerprint": "759c03bbdadb8b65841105d5c2bcc1d7015cfc1b53e98b78c06bebf0bdeebd69",
+    "product": "open_duck_mini_runtime",
+    "version": 1
+  },
+  "signature": "kOGtyEXnjCMUeHcaCCZIPebSJr86OYP9psjjXE-g-Pg"
+}
