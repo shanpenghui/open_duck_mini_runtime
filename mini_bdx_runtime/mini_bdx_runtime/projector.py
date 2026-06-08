@@ -1,29 +1,45 @@
-import RPi.GPIO as GPIO
 import time
 
-PROJECTOR_GPIO = 25
+import gpiod
+from gpiod.line import Direction, Value
+
+
+PROJECTOR_GPIO = 262  # PI6，对应原树莓派 GPIO25 / 物理 Pin 22
+GPIO_CHIP = "/dev/gpiochip0"
+
 
 class Projector:
     def __init__(self):
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
-        GPIO.setup(PROJECTOR_GPIO, GPIO.OUT)
+        self.request = gpiod.request_lines(
+            GPIO_CHIP,
+            consumer="openduck-projector",
+            config={
+                PROJECTOR_GPIO: gpiod.LineSettings(
+                    direction=Direction.OUTPUT,
+                    output_value=Value.INACTIVE,
+                ),
+            },
+        )
 
-        GPIO.output(PROJECTOR_GPIO, GPIO.LOW)
         self.on = False
 
     def switch(self):
         self.on = not self.on
 
         if self.on:
-            GPIO.output(PROJECTOR_GPIO, GPIO.HIGH)
+            self.request.set_value(PROJECTOR_GPIO, Value.ACTIVE)
         else:
-            GPIO.output(PROJECTOR_GPIO, GPIO.LOW)
+            self.request.set_value(PROJECTOR_GPIO, Value.INACTIVE)
+
+    def close(self):
+        self.request.release()
 
 
 if __name__ == "__main__":
     p = Projector()
-    while True:
-
-        p.switch()
-        time.sleep(1)
+    try:
+        while True:
+            p.switch()
+            time.sleep(1)
+    except KeyboardInterrupt:
+        p.close()

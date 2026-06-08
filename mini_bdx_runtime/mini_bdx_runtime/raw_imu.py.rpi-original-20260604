@@ -1,34 +1,25 @@
 import adafruit_bno055
+import board
+import busio
 import numpy as np
 import os
 import pickle
-from adafruit_extended_bus import ExtendedI2C
 
 from queue import Queue
 from threading import Thread
 import time
 
-DEFAULT_I2C_BUS = int(os.environ.get("OPENDUCK_IMU_I2C_BUS", "2"))
-DEFAULT_I2C_ADDRESS = int(os.environ.get("OPENDUCK_IMU_I2C_ADDRESS", "0x28"), 0)
-
 
 # TODO filter spikes
 class Imu:
     def __init__(
-        self,
-        sampling_freq,
-        user_pitch_bias=0,
-        calibrate=False,
-        upside_down=True,
-        i2c_bus=DEFAULT_I2C_BUS,
-        i2c_address=DEFAULT_I2C_ADDRESS,
+        self, sampling_freq, user_pitch_bias=0, calibrate=False, upside_down=True
     ):
         self.sampling_freq = sampling_freq
         self.calibrate = calibrate
 
-        print(f"[IMU] Using /dev/i2c-{i2c_bus}, address 0x{i2c_address:02x}")
-        i2c = ExtendedI2C(i2c_bus)
-        self.imu = adafruit_bno055.BNO055_I2C(i2c, address=i2c_address)
+        i2c = busio.I2C(board.SCL, board.SDA)
+        self.imu = adafruit_bno055.BNO055_I2C(i2c)
 
         # self.imu.mode = adafruit_bno055.IMUPLUS_MODE
         # self.imu.mode = adafruit_bno055.ACCGYRO_MODE

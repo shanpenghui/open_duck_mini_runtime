@@ -1,5 +1,59 @@
 # Open Duck Mini Runtime
 
+## Orange Pi Zero 2W Branch
+
+This branch is for running Open Duck Mini Runtime on Orange Pi Zero 2W
+with the Allwinner H618 SoC.
+
+The original project was mainly written for Raspberry Pi Zero 2W. Orange Pi
+Zero 2W is not a drop-in software replacement, even when some 40-pin header
+positions look similar. The boot chain, kernel, device tree, GPIO library,
+I2C bus names, PWM handling, Bluetooth behavior, and low-level hardware
+drivers are different.
+
+Current Orange Pi adaptation notes:
+
+- IMU access has been adapted to use Linux I2C on Orange Pi. The current
+  runtime uses `/dev/i2c-2` and BNO055 address `0x28`.
+- GPIO code is being moved away from Raspberry Pi-only `RPi.GPIO`.
+- GPIO input/output modules are being adapted for `gpiod` 2.x.
+- `projector.py` has been adapted to `gpiod.request_lines(...)` style output.
+- `feet_contacts.py` is adapted for Orange Pi GPIO input, but the left/right
+  physical wiring should still be checked on the real robot before walking.
+- `antennas.py` currently avoids hard failure when `RPi.GPIO` is missing.
+  Orange Pi PWM/servo antenna control still needs a proper hardware-safe
+  implementation.
+- `requirements.txt` may still contain Raspberry Pi-specific packages such as
+  `RPi.GPIO`. Those packages do not work as-is on Orange Pi and should be
+  replaced or removed when the Orange Pi version is finalized.
+
+Known physical pin mapping used during this adaptation:
+
+```text
+Function          Raspberry Pi BCM  Physical Pin  Orange Pi signal
+Left foot contact GPIO22            Pin 15        PI5
+Right foot contact GPIO27           Pin 13        PH3
+Projector switch  GPIO25            Pin 22        PI6
+Left antenna      GPIO13            Pin 33        PI12 / PWM2
+Right antenna     GPIO12            Pin 32        PI11 / PWM1
+Left eye LED      GPIO24            Pin 18        PH4
+Right eye LED     GPIO23            Pin 16        PI14
+```
+
+Before running any gait command on Orange Pi:
+
+- Make sure the robot is fixed in place or suspended so it cannot fall.
+- Check the motor serial device, usually `/dev/ttyACM0`.
+- Check the IMU can read data from `/dev/i2c-2`.
+- Check GPIO inputs and outputs one module at a time.
+- Check the Xbox controller is paired, trusted, connected, and visible as
+  `/dev/input/js0`.
+- Check the battery voltage is safely above the configured minimum.
+- Start with a low `--action_scale` for first tests.
+
+Do not commit local virtual environments, image files, compressed archives,
+SSH keys, tokens, or temporary cache files to this branch.
+
 ## Robot Runtime Helper
 
 On the robot, use the local helper script instead of typing the full runtime

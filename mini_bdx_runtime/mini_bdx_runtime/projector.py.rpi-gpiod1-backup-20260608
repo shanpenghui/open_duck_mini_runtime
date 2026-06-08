@@ -1,0 +1,43 @@
+import time
+
+import gpiod
+
+
+PROJECTOR_GPIO = 262  # PI6，对应原树莓派 GPIO25 / 物理 Pin 22
+GPIO_CHIP = "/dev/gpiochip0"
+
+
+class Projector:
+    def __init__(self):
+        self.chip = gpiod.Chip(GPIO_CHIP)
+        self.line = self.chip.get_line(PROJECTOR_GPIO)
+
+        self.line.request(
+            consumer="openduck-projector",
+            type=gpiod.LINE_REQ_DIR_OUT,
+            default_vals=[0],
+        )
+
+        self.on = False
+
+    def switch(self):
+        self.on = not self.on
+
+        if self.on:
+            self.line.set_value(1)
+        else:
+            self.line.set_value(0)
+
+    def close(self):
+        self.line.release()
+        self.chip.close()
+
+
+if __name__ == "__main__":
+    p = Projector()
+    try:
+        while True:
+            p.switch()
+            time.sleep(1)
+    except KeyboardInterrupt:
+        p.close()

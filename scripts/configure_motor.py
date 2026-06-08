@@ -44,7 +44,7 @@ def main():
             raise RuntimeError("Could not find any motor on the bus")
 
     print(f"Configuring motor {servo_id}")
-    io.write_lock(servo_id, 0)
+    io.write_lock(servo_id, False)
     io.write_mode(servo_id, 0)
     io.write_maximum_acceleration(servo_id, args.maximum_acceleration)
     io.write_acceleration(servo_id, args.acceleration)

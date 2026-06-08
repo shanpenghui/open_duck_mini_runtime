@@ -1,21 +1,33 @@
-import RPi.GPIO as GPIO
-import numpy as np
 import time
 from threading import Thread
 
-LEFT_EYE_GPIO = 24
-RIGHT_EYE_GPIO = 23
+import gpiod
+import numpy as np
+from gpiod.line import Direction, Value
+
+
+LEFT_EYE_GPIO = 228   # PH4，对应原树莓派 GPIO24 / 物理 Pin 18
+RIGHT_EYE_GPIO = 270  # PI14，对应原树莓派 GPIO23 / 物理 Pin 16
+
+GPIO_CHIP = "/dev/gpiochip0"
 
 
 class Eyes:
     def __init__(self):
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
-        GPIO.setup(RIGHT_EYE_GPIO, GPIO.OUT)
-        GPIO.setup(LEFT_EYE_GPIO, GPIO.OUT)
-
-        GPIO.output(RIGHT_EYE_GPIO, GPIO.HIGH)
-        GPIO.output(LEFT_EYE_GPIO, GPIO.HIGH)
+        self.request = gpiod.request_lines(
+            GPIO_CHIP,
+            consumer="openduck-eyes",
+            config={
+                LEFT_EYE_GPIO: gpiod.LineSettings(
+                    direction=Direction.OUTPUT,
+                    output_value=Value.ACTIVE,
+                ),
+                RIGHT_EYE_GPIO: gpiod.LineSettings(
+                    direction=Direction.OUTPUT,
+                    output_value=Value.ACTIVE,
+                ),
+            },
+        )
 
         self.blink_duration = 0.1
 
@@ -23,18 +35,24 @@ class Eyes:
 
     def run(self):
         while True:
-            GPIO.output(RIGHT_EYE_GPIO, GPIO.LOW)
-            GPIO.output(LEFT_EYE_GPIO, GPIO.LOW)
+            self.request.set_value(RIGHT_EYE_GPIO, Value.INACTIVE)
+            self.request.set_value(LEFT_EYE_GPIO, Value.INACTIVE)
             time.sleep(self.blink_duration)
-            GPIO.output(RIGHT_EYE_GPIO, GPIO.HIGH)
-            GPIO.output(LEFT_EYE_GPIO, GPIO.HIGH)
 
-            next_blink = np.random.rand() * 4  # seconds
+            self.request.set_value(RIGHT_EYE_GPIO, Value.ACTIVE)
+            self.request.set_value(LEFT_EYE_GPIO, Value.ACTIVE)
 
+            next_blink = np.random.rand() * 4
             time.sleep(next_blink)
+
+    def close(self):
+        self.request.release()
 
 
 if __name__ == "__main__":
-	e = Eyes()
-	while True:
-		time.sleep(1)
+    e = Eyes()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        e.close()
