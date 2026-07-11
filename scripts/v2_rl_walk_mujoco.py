@@ -1,5 +1,6 @@
 import time
 import pickle
+import subprocess
 
 import numpy as np
 from mini_bdx_runtime.rustypot_position_hwi import HWI
@@ -49,6 +50,9 @@ class RLWalk:
             cutoff_frequency=None,
             min_motor_voltage=6.8,
             power_log_interval=0.0,
+        shutdown_button_index=15,
+            shutdown_hold_seconds=7.0,
+            shutdown_command="sudo -n /usr/bin/systemctl poweroff",
     ):
 
         self.duck_config = DuckConfig(config_json_path=duck_config_path)
@@ -104,6 +108,11 @@ class RLWalk:
             if self.power_log_interval > 0
             else 0
         )
+        self.shutdown_button_index = shutdown_button_index
+        self.shutdown_hold_seconds = shutdown_hold_seconds
+        self.shutdown_command = shutdown_command
+        self._shutdown_button_pressed_since = None
+        self._shutdown_requested = False
 
         self.last_action = np.zeros(self.num_dofs)
         self.last_last_action = np.zeros(self.num_dofs)
@@ -149,6 +158,57 @@ class RLWalk:
             )
         if self.duck_config.antennas:
             self.antennas = Antennas()
+
+    def shutdown_button_pressed(self):
+        if self.shutdown_button_index is None or self.shutdown_button_index < 0:
+            return False
+        if self.command_source != "xbox" or self.command_controller is None:
+            return False
+        if not hasattr(self.command_controller, "get_raw_button"):
+            return False
+        return self.command_controller.get_raw_button(self.shutdown_button_index)
+
+    def check_shutdown_button(self, now):
+        if self._shutdown_requested:
+            return
+
+        if not self.shutdown_button_pressed():
+            self._shutdown_button_pressed_since = None
+            return
+
+        if self._shutdown_button_pressed_since is None:
+            self._shutdown_button_pressed_since = now
+            print(
+                f"[SHUTDOWN] Hold button {self.shutdown_button_index} for "
+                f"{self.shutdown_hold_seconds:.1f}s to power off."
+            )
+            return
+
+        held_seconds = now - self._shutdown_button_pressed_since
+        if held_seconds >= self.shutdown_hold_seconds:
+            self.request_shutdown(held_seconds)
+
+    def request_shutdown(self, held_seconds):
+        self._shutdown_requested = True
+        self.paused = True
+        self.last_commands = [0.0] * len(self.last_commands)
+        print(
+            f"[SHUTDOWN] Button {self.shutdown_button_index} held for "
+            f"{held_seconds:.1f}s. Turning torque off and powering off."
+        )
+        try:
+            self.hwi.turn_off()
+        except Exception as exc:
+            print(f"[SHUTDOWN] Torque-off failed before poweroff: {exc}")
+
+        try:
+            subprocess.Popen(self.shutdown_command, shell=True)
+        except Exception as exc:
+            print(f"[SHUTDOWN] Failed to run '{self.shutdown_command}': {exc}")
+            self._shutdown_requested = False
+            return
+
+        raise SystemExit(0)
 
     def get_obs(self):
 
@@ -301,6 +361,7 @@ class RLWalk:
                     self.last_commands, self.buttons, left_trigger, right_trigger = (
                         self.command_controller.get_last_command()
                     )
+                    self.check_shutdown_button(t)
                     # if i % 20 == 0:
                     #     print(f"[CMD] lin_x={self.last_commands[0]:.3f}, lin_y={self.last_commands[1]:.3f}, yaw={self.last_commands[2]:.3f}")
 
@@ -542,6 +603,27 @@ if __name__ == "__main__":
         default=0.0,
         help="Seconds between voltage/current log lines. 0 disables power logs.",
     )
+    parser.add_argument(
+        "--shutdown_button_index",
+        type=int,
+        default=int(os.environ.get("DUCK_SHUTDOWN_BUTTON_INDEX", "15")),
+        help="Raw joystick button index that powers off the Orange Pi when held. Use -1 to disable.",
+    )
+    parser.add_argument(
+        "--shutdown_hold_seconds",
+        type=float,
+        default=float(os.environ.get("DUCK_SHUTDOWN_HOLD_SECONDS", "7.0")),
+        help="Seconds the shutdown button must be held before poweroff.",
+    )
+    parser.add_argument(
+        "--shutdown_command",
+        type=str,
+        default=os.environ.get(
+            "DUCK_SHUTDOWN_COMMAND",
+            "sudo -n /usr/bin/systemctl poweroff",
+        ),
+        help="Command executed after the shutdown button is held.",
+    )
 
     args = parser.parse_args()
     pid = [args.p, args.i, args.d]
@@ -561,6 +643,9 @@ if __name__ == "__main__":
         cutoff_frequency=args.cutoff_frequency,
         min_motor_voltage=args.min_motor_voltage,
         power_log_interval=args.power_log_interval,
+        shutdown_button_index=args.shutdown_button_index,
+        shutdown_hold_seconds=args.shutdown_hold_seconds,
+        shutdown_command=args.shutdown_command,
     )
     print("Done instantiating RLWalk")
     rl_walk.run()

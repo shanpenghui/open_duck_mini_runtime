@@ -42,6 +42,7 @@ class XBoxController:
         self.RB_pressed = False
 
         self.buttons = Buttons()
+        self.raw_buttons = ()
 
         Thread(target=self.commands_worker, daemon=True).start()
 
@@ -179,8 +180,11 @@ class XBoxController:
             #     if self.p1.get_button(i):
             #         print(f"Button {i} pressed")
 
-        up_down = self.p1.get_hat(0)[1]
         pygame.event.pump()  # process event queue
+        self.raw_buttons = tuple(
+            bool(self.p1.get_button(i)) for i in range(self.p1.get_numbuttons())
+        )
+        up_down = self.p1.get_hat(0)[1]
 
         return (
             np.around(last_commands, 3),
@@ -239,6 +243,15 @@ class XBoxController:
             self.last_left_trigger,
             self.last_right_trigger,
         )
+
+    def get_raw_button(self, index):
+        try:
+            return bool(self.raw_buttons[int(index)])
+        except (IndexError, TypeError, ValueError):
+            return False
+
+    def get_pressed_button_indexes(self):
+        return [i for i, pressed in enumerate(self.raw_buttons) if pressed]
 
 if __name__ == "__main__":
     controller = XBoxController(20)

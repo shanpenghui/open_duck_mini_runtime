@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${DUCK_APP_DIR:-/home/duck/open_duck_mini_runtime}"
-PYTHON="${DUCK_PYTHON:-/home/duck/.venv/bin/python}"
+APP_DIR="${DUCK_APP_DIR:-$HOME/open_duck_mini_runtime}"
+PYTHON="${DUCK_PYTHON:-$APP_DIR/.venv/bin/python}"
 LOG_FILE="${DUCK_LOG_FILE:-/tmp/duck.log}"
 PID_FILE="${DUCK_PID_FILE:-/tmp/duck_walk.pid}"
 MODEL="${DUCK_ONNX_MODEL:-BEST_WALK_ONNX_2.onnx}"
@@ -17,6 +17,7 @@ POWER_LOG_INTERVAL="${DUCK_POWER_LOG_INTERVAL:-1.0}"
 WAIT_CONTROLLER="${DUCK_WAIT_CONTROLLER:-1}"
 WAIT_CONTROLLER_TIMEOUT="${DUCK_WAIT_CONTROLLER_TIMEOUT:-0}"
 WAIT_CONTROLLER_INTERVAL="${DUCK_WAIT_CONTROLLER_INTERVAL:-2}"
+IMU_I2C_BUS="${OPENDUCK_IMU_I2C_BUS:-2}"
 
 export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-dummy}"
 export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-dummy}"
@@ -79,7 +80,7 @@ check_duck() {
     echo "[CHECK] App dir: $APP_DIR"
     echo "[CHECK] Python: $("$PYTHON" --version 2>&1)"
     [ -e /dev/ttyACM0 ] && echo "[OK] servo bus: /dev/ttyACM0" || echo "[MISSING] servo bus: /dev/ttyACM0"
-    [ -e /dev/i2c-1 ] && echo "[OK] I2C: /dev/i2c-1" || echo "[MISSING] I2C: /dev/i2c-1"
+    [ -e "/dev/i2c-$IMU_I2C_BUS" ] && echo "[OK] I2C: /dev/i2c-$IMU_I2C_BUS" || echo "[MISSING] I2C: /dev/i2c-$IMU_I2C_BUS"
     [ -e /dev/input/js0 ] && echo "[OK] joystick: /dev/input/js0" || echo "[WARN] joystick missing: /dev/input/js0"
     bluetoothctl info C0:D6:D5:E9:D7:19 2>/dev/null | sed -n '/Paired:/p;/Bonded:/p;/Trusted:/p;/Connected:/p' || true
 }

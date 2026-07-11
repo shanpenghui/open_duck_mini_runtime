@@ -7,13 +7,6 @@ import sys
 import time
 from pathlib import Path
 
-try:
-    import paramiko
-except ImportError:
-    print("Missing dependency: paramiko. Install it with: python -m pip install paramiko", file=sys.stderr)
-    raise
-
-
 DEFAULT_HOST = "192.168.0.34"
 DEFAULT_USER = "duck"
 DEFAULT_REMOTE_DIR = "/home/duck/open_duck_mini_runtime"
@@ -29,6 +22,15 @@ def should_skip(path: Path) -> bool:
 
 class DuckRemote:
     def __init__(self, host, user, password, remote_dir):
+        try:
+            import paramiko
+        except ImportError as exc:
+            print(
+                "Missing dependency: paramiko. Install it with: python -m pip install paramiko",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from exc
+
         self.host = host
         self.user = user
         self.password = password

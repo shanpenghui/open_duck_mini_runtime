@@ -9,7 +9,7 @@ def main():
     print(f"✅ 检测到手柄：{joystick.get_name()}")
     print(f"🎮 可用轴数量：{joystick.get_numaxes()}")
     print(f"🎮 可用按钮数量：{joystick.get_numbuttons()}")
-    print("🎯 请操作手柄，观察轴变化（Ctrl+C 退出）")
+    print("🎯 请操作手柄，观察轴和按钮变化（Ctrl+C 退出）")
 
     try:
         while True:
@@ -17,7 +17,9 @@ def main():
 
             axes = [joystick.get_axis(i) for i in range(joystick.get_numaxes())]
             axis_str = ", ".join([f"axis{i}={v:+.3f}" for i, v in enumerate(axes)])
-            print(f"[RAW AXIS] {axis_str}")
+            buttons = [i for i in range(joystick.get_numbuttons()) if joystick.get_button(i)]
+            hats = [joystick.get_hat(i) for i in range(joystick.get_numhats())]
+            print(f"[RAW AXIS] {axis_str} | pressed_buttons={buttons} | hats={hats}")
 
             time.sleep(0.1)
     except KeyboardInterrupt:

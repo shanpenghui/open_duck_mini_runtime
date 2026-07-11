@@ -13,11 +13,20 @@ import numpy as np
 
 try:
     import cv2
-except ImportError as exc:  # pragma: no cover - Pi runtime dependency
-    raise SystemExit("opencv is required: sudo apt-get install python3-opencv") from exc
+except ImportError:  # pragma: no cover - Pi runtime dependency
+    cv2 = None
 
 
 LABELS = ["none", "left", "right", "forward", "back", "stop"]
+
+
+def require_opencv() -> None:
+    if cv2 is None:
+        raise SystemExit(
+            "opencv is required for camera/vision commands. Install a version "
+            "compatible with this virtualenv, or run these scripts from a "
+            "separate vision environment."
+        )
 
 
 def load_tflite_model(model_path: Path, labels: list[str]):
@@ -457,6 +466,7 @@ def main() -> None:
     parser.add_argument("--save-debug", type=Path, default=None)
     args = parser.parse_args()
 
+    require_opencv()
     model = load_tflite_model(args.model, LABELS)
     mode = "tflite" if model is not None else "geometry"
     print(json.dumps({"event": "start", "mode": mode, "model": str(args.model)}, ensure_ascii=False), flush=True)

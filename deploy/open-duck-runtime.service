@@ -1,19 +1,33 @@
 [Unit]
 Description=Open Duck Mini walking runtime
-After=bluetooth.service network-online.target
 Wants=bluetooth.service network-online.target
+After=bluetooth.service network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=10
 
 [Service]
 Type=simple
-User=duck
-WorkingDirectory=/home/duck/open_duck_mini_runtime
+User=orangepi
+WorkingDirectory=/home/orangepi/open_duck_mini_runtime
+Environment=DUCK_APP_DIR=/home/orangepi/open_duck_mini_runtime
+Environment=DUCK_PYTHON=/home/orangepi/open_duck_mini_runtime/.venv/bin/python
 Environment=DUCK_WAIT_CONTROLLER=1
 Environment=DUCK_WAIT_CONTROLLER_TIMEOUT=0
-ExecStart=/home/duck/open_duck_mini_runtime/run_duck.sh start-foreground
-ExecStop=/home/duck/open_duck_mini_runtime/run_duck.sh stop
+Environment=OPENDUCK_IMU_I2C_BUS=2
+Environment=DUCK_SHUTDOWN_BUTTON_INDEX=15
+Environment=DUCK_SHUTDOWN_HOLD_SECONDS=7.0
+Environment="DUCK_SHUTDOWN_COMMAND=sudo -n /usr/bin/systemctl poweroff"
+Environment=PYTHONUNBUFFERED=1
+Environment=SDL_VIDEODRIVER=dummy
+Environment=SDL_AUDIODRIVER=dummy
+ExecStartPre=/bin/bash -lc 'for i in $$(seq 1 90); do [ -e /dev/ttyACM0 ] && exit 0; echo "[WAIT] waiting for /dev/ttyACM0 ($$i/90)"; sleep 1; done; echo "[ERROR] /dev/ttyACM0 not found"; exit 1'
+ExecStart=/home/orangepi/open_duck_mini_runtime/run_duck.sh start-foreground
+ExecStop=/home/orangepi/open_duck_mini_runtime/run_duck.sh stop
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

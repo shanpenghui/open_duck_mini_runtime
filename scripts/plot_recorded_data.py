@@ -1,12 +1,18 @@
 import pickle
 import argparse
-import matplotlib.pyplot as plt
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-f", "--file", type=str, required=True)
 args = parser.parse_args()
 
 data = pickle.load(open(args.file, "rb"))
+
+try:
+    import matplotlib.pyplot as plt
+except ImportError as exc:
+    raise SystemExit(
+        "matplotlib is required to plot recorded data. Install it with: python -m pip install matplotlib"
+    ) from exc
 
 
 plt.figure()

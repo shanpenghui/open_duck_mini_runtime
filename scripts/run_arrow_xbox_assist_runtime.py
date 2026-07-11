@@ -36,7 +36,7 @@ def build_runtime_command(args: argparse.Namespace) -> list[str]:
         "-u",
         "scripts/v2_rl_walk_mujoco.py",
         "--onnx_model_path",
-        "BEST_WALK_ONNX_2.onnx",
+        str(args.onnx_model_path),
         "--duck_config_path",
         str(args.duck_config_path),
         "--commands",
@@ -334,9 +334,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Use Xbox for manual Open Duck control, with Camera V2 left/right arrow turn assist."
     )
-    parser.add_argument("--python", default="/home/duck/.venv/bin/python")
-    parser.add_argument("--runtime-root", type=Path, default=Path("/home/duck/open_duck_mini_runtime"))
-    parser.add_argument("--duck_config_path", type=Path, default=Path("/home/duck/open_duck_mini_runtime/duck_config.json"))
+    default_runtime_root = Path.home() / "open_duck_mini_runtime"
+    parser.add_argument("--python", default=str(default_runtime_root / ".venv/bin/python"))
+    parser.add_argument("--runtime-root", type=Path, default=default_runtime_root)
+    parser.add_argument("--onnx_model_path", type=Path, default=default_runtime_root / "BEST_WALK_ONNX_2.onnx")
+    parser.add_argument("--duck_config_path", type=Path, default=default_runtime_root / "duck_config.json")
     parser.add_argument("--control_freq", type=int, default=50)
     parser.add_argument("-p", "--kp", type=int, default=22)
     parser.add_argument("-d", "--kd", type=int, default=0)
