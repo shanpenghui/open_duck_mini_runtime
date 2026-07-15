@@ -1,0 +1,665 @@
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+TOOL_VERSION = "0.1"
+SOURCE = "localization-state"
+MODE = "dead_reckoning_v0"
+DEFAULT_STEP_DISTANCE_M = 0.10
+DEFAULT_STRAFE_DISTANCE_M = 0.08
+DEFAULT_SMALL_TURN_DEG = 12.0
+DEFAULT_STABLE_YAW_RATE_DPS = 8.0
+DEFAULT_GYRO_DURATION_S = 1.5
+DEFAULT_GYRO_DEADBAND_DPS = 1.5
+
+
+def localization_status() -> dict[str, Any]:
+    return _base_payload(
+        {
+            "tool_version": TOOL_VERSION,
+            "mode": MODE,
+            "message": (
+                "Read-only localization state tool. It estimates x/y/yaw from "
+                "BNO055 yaw plus recorded high-level robot actions."
+            ),
+            "robot_action_executed": False,
+        }
+    )
+
+
+def reset_state(
+    *,
+    state_path: str | Path | None = None,
+    skip_imu: bool = False,
+    origin_label: str = "manual_reset",
+) -> dict[str, Any]:
+    imu = _read_imu(skip_imu=skip_imu)
+    imu_yaw = _posture_yaw(imu)
+    now = _now_iso()
+    state = {
+        "ok": True,
+        "source": SOURCE,
+        "tool_version": TOOL_VERSION,
+        "mode": MODE,
+        "timestamp": now,
+        "localization_ok": imu.get("ok") is True or skip_imu,
+        "origin": {
+            "label": origin_label,
+            "timestamp": now,
+            "imu_yaw_deg": imu_yaw,
+        },
+        "pose": {
+            "x_m": 0.0,
+            "y_m": 0.0,
+            "yaw_deg": 0.0,
+        },
+        "confidence": 0.75 if imu_yaw is not None else 0.35,
+        "summary": _summary(0.0, 0.0, 0.0, 0.75 if imu_yaw is not None else 0.35),
+        "imu": _imu_brief(imu),
+        "last_action": None,
+        "warnings": [] if imu_yaw is not None or skip_imu else ["imu_yaw_unknown"],
+        "robot_action_executed": False,
+    }
+    _write_json(_resolve_state_path(state_path), state)
+    return state
+
+
+def observe_state(
+    *,
+    state_path: str | Path | None = None,
+    output_path: str | Path | None = None,
+    skip_imu: bool = False,
+) -> dict[str, Any]:
+    path = _resolve_state_path(state_path)
+    state = _load_or_default_state(path, skip_imu=skip_imu)
+    imu = _read_imu(skip_imu=skip_imu)
+    state = _refresh_yaw_from_imu(state, imu)
+    state["timestamp"] = _now_iso()
+    state["imu"] = _imu_brief(imu)
+    state["summary"] = _summary_from_state(state)
+    state["robot_action_executed"] = False
+    _write_json(path, state)
+    if output_path is not None:
+        _write_json(Path(output_path).expanduser(), state)
+    return state
+
+
+def observe_gyro(
+    *,
+    duration_s: float = DEFAULT_GYRO_DURATION_S,
+    deadband_dps: float = DEFAULT_GYRO_DEADBAND_DPS,
+    state_path: str | Path | None = None,
+    output_path: str | Path | None = None,
+    update_state: bool = True,
+    skip_imu: bool = False,
+) -> dict[str, Any]:
+    path = _resolve_state_path(state_path)
+    state = _load_or_default_state(path, skip_imu=skip_imu)
+    result = _integrate_gyro_yaw(
+        duration_s=duration_s,
+        deadband_dps=deadband_dps,
+        skip_imu=skip_imu,
+    )
+    if result.get("ok") is True and update_state:
+        pose = _pose_from_state(state)
+        delta_yaw = _optional_float(result.get("delta_yaw_deg")) or 0.0
+        pose["yaw_deg"] = _normalize_deg(pose["yaw_deg"] + delta_yaw)
+        state["pose"] = _round_pose(pose)
+        state["confidence"] = _confidence_after_gyro(float(state.get("confidence") or 0.45), result)
+        state["timestamp"] = _now_iso()
+        state["imu"] = result.get("last_imu")
+        state["last_gyro_observation"] = result
+        state["summary"] = _summary_from_state(state)
+        state["robot_action_executed"] = False
+        _write_json(path, state)
+        result["localization_state"] = state
+    if output_path is not None:
+        _write_json(Path(output_path).expanduser(), result)
+    return result
+
+
+def record_action(
+    *,
+    command_id: str,
+    params: dict[str, Any] | None = None,
+    state_path: str | Path | None = None,
+    history_path: str | Path | None = None,
+    output_path: str | Path | None = None,
+    skip_imu: bool = False,
+    gyro_duration_s: float = 0.0,
+    gyro_deadband_dps: float = DEFAULT_GYRO_DEADBAND_DPS,
+) -> dict[str, Any]:
+    path = _resolve_state_path(state_path)
+    state = _load_or_default_state(path, skip_imu=skip_imu)
+    imu_before = _read_imu(skip_imu=skip_imu)
+    state = _refresh_yaw_from_imu(state, imu_before)
+
+    params = params or {}
+    delta = _estimate_action_delta(command_id, params)
+    gyro_result: dict[str, Any] | None = None
+    if gyro_duration_s > 0 and not skip_imu:
+        gyro_result = _integrate_gyro_yaw(
+            duration_s=gyro_duration_s,
+            deadband_dps=gyro_deadband_dps,
+            skip_imu=skip_imu,
+        )
+        if gyro_result.get("ok") is True:
+            gyro_delta = _optional_float(gyro_result.get("delta_yaw_deg"))
+            if gyro_delta is not None:
+                delta["dyaw_deg"] = round(gyro_delta, 2)
+                delta["source"] = "gyro_z_integrated"
+    pose = _pose_from_state(state)
+    yaw_for_motion = _normalize_deg(pose["yaw_deg"] + delta["dyaw_deg"] / 2.0)
+    heading = math.radians(yaw_for_motion)
+    forward = delta["forward_m"]
+    strafe = delta["strafe_m"]
+    pose["x_m"] += forward * math.cos(heading) - strafe * math.sin(heading)
+    pose["y_m"] += forward * math.sin(heading) + strafe * math.cos(heading)
+    pose["yaw_deg"] = _normalize_deg(pose["yaw_deg"] + delta["dyaw_deg"])
+
+    confidence = _confidence_after_action(float(state.get("confidence") or 0.35), delta)
+    state["pose"] = _round_pose(pose)
+    state["confidence"] = confidence
+    state["timestamp"] = _now_iso()
+    state["last_action"] = {
+        "timestamp": state["timestamp"],
+        "command_id": command_id,
+        "params": params,
+        "estimated_delta": delta,
+        "gyro_observation": gyro_result,
+    }
+
+    imu_after = _read_imu(skip_imu=skip_imu)
+    state = _refresh_yaw_from_imu(state, imu_after)
+    state["imu"] = _imu_brief(imu_after if imu_after.get("ok") is True else imu_before)
+    state["summary"] = _summary_from_state(state)
+    state["robot_action_executed"] = False
+    _write_json(path, state)
+    _append_history(_resolve_history_path(history_path), state["last_action"], state)
+    if output_path is not None:
+        _write_json(Path(output_path).expanduser(), state)
+    return state
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "status":
+        payload = localization_status()
+    elif args.command == "reset":
+        payload = reset_state(
+            state_path=args.state,
+            skip_imu=args.skip_imu,
+            origin_label=args.origin_label,
+        )
+    elif args.command == "observe":
+        payload = observe_state(
+            state_path=args.state,
+            output_path=args.output,
+            skip_imu=args.skip_imu,
+        )
+    elif args.command == "observe-gyro":
+        payload = observe_gyro(
+            duration_s=args.duration,
+            deadband_dps=args.deadband_dps,
+            state_path=args.state,
+            output_path=args.output,
+            update_state=not args.no_update,
+            skip_imu=args.skip_imu,
+        )
+    elif args.command == "record-action":
+        payload = record_action(
+            command_id=args.command_id,
+            params=_action_params_from_args(args),
+            state_path=args.state,
+            history_path=args.history,
+            output_path=args.output,
+            skip_imu=args.skip_imu,
+            gyro_duration_s=args.gyro_duration,
+            gyro_deadband_dps=args.gyro_deadband_dps,
+        )
+    else:
+        parser.error("missing command")
+
+    _print_payload(payload, output_format=args.format)
+    return 0 if payload.get("ok") is True else 1
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m server.localization_state_tool",
+        description="Estimate simple x/y/yaw localization state without controlling the robot.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    status_parser = subparsers.add_parser("status", help="Print tool status.")
+    _add_format_arg(status_parser)
+
+    reset_parser = subparsers.add_parser("reset", help="Set current robot pose as x=0, y=0, yaw=0.")
+    reset_parser.add_argument("--state")
+    reset_parser.add_argument("--origin-label", default="manual_reset")
+    reset_parser.add_argument("--skip-imu", action="store_true")
+    _add_format_arg(reset_parser)
+
+    observe_parser = subparsers.add_parser("observe", help="Read current localization state.")
+    observe_parser.add_argument("--state")
+    observe_parser.add_argument("--output")
+    observe_parser.add_argument("--skip-imu", action="store_true")
+    _add_format_arg(observe_parser)
+
+    gyro_parser = subparsers.add_parser("observe-gyro", help="Integrate BNO055 gyro_z for a short yaw delta.")
+    gyro_parser.add_argument("--duration", type=float, default=DEFAULT_GYRO_DURATION_S)
+    gyro_parser.add_argument("--deadband-dps", type=float, default=DEFAULT_GYRO_DEADBAND_DPS)
+    gyro_parser.add_argument("--state")
+    gyro_parser.add_argument("--output")
+    gyro_parser.add_argument("--no-update", action="store_true", help="Only print gyro delta; do not update state file.")
+    gyro_parser.add_argument("--skip-imu", action="store_true")
+    _add_format_arg(gyro_parser)
+
+    action_parser = subparsers.add_parser("record-action", help="Update pose estimate from one high-level action.")
+    action_parser.add_argument("--command-id", required=True)
+    action_parser.add_argument("--params-json", help="Optional JSON object with command params.")
+    action_parser.add_argument("--direction", type=float, help="Turn direction: 1 for left, -1 for right.")
+    action_parser.add_argument("--degrees", type=float, help="Turn degrees for turn_degrees.")
+    action_parser.add_argument("--distance-m", type=float, help="Forward distance override in meters.")
+    action_parser.add_argument("--strafe-m", type=float, help="Left/right distance override in meters.")
+    action_parser.add_argument("--state")
+    action_parser.add_argument("--history")
+    action_parser.add_argument("--output")
+    action_parser.add_argument("--skip-imu", action="store_true")
+    action_parser.add_argument(
+        "--gyro-duration",
+        type=float,
+        default=0.0,
+        help="If >0, integrate gyro_z for this many seconds and use it as yaw delta.",
+    )
+    action_parser.add_argument("--gyro-deadband-dps", type=float, default=DEFAULT_GYRO_DEADBAND_DPS)
+    _add_format_arg(action_parser)
+    return parser
+
+
+def _add_format_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--format",
+        choices=("json", "brief"),
+        default="json",
+        help="Output format. Use brief for a short human-readable line.",
+    )
+
+
+def _read_imu(*, skip_imu: bool, samples: int = 5, sample_interval_s: float = 0.04) -> dict[str, Any]:
+    if skip_imu:
+        return {"ok": False, "skipped": True, "message": "IMU read skipped by request."}
+    try:
+        from server.imu_posture_tool import read_posture
+
+        return read_posture(samples=samples, sample_interval_s=sample_interval_s)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "imu_read_failed",
+            "message": str(exc),
+        }
+
+
+def _integrate_gyro_yaw(*, duration_s: float, deadband_dps: float, skip_imu: bool) -> dict[str, Any]:
+    duration_s = max(0.1, min(10.0, float(duration_s)))
+    deadband_dps = max(0.0, min(30.0, float(deadband_dps)))
+    start = time.monotonic()
+    deadline = start + duration_s
+    last_time = start
+    last_rate: float | None = None
+    delta_yaw = 0.0
+    samples: list[dict[str, Any]] = []
+    last_imu: dict[str, Any] | None = None
+
+    while time.monotonic() < deadline:
+        imu = _read_imu(skip_imu=skip_imu, samples=1, sample_interval_s=0.0)
+        now = time.monotonic()
+        posture = imu.get("posture") if isinstance(imu.get("posture"), dict) else {}
+        yaw_rate = _optional_float(posture.get("yaw_rate_dps"))
+        if imu.get("ok") is True and yaw_rate is not None:
+            filtered_rate = 0.0 if abs(yaw_rate) < deadband_dps else yaw_rate
+            if last_rate is None:
+                dt = max(0.0, now - last_time)
+                delta_yaw += filtered_rate * dt
+            else:
+                dt = max(0.0, now - last_time)
+                delta_yaw += (last_rate + filtered_rate) * 0.5 * dt
+            last_rate = filtered_rate
+            samples.append(
+                {
+                    "t_s": round(now - start, 3),
+                    "yaw_rate_dps": round(yaw_rate, 2),
+                    "used_yaw_rate_dps": round(filtered_rate, 2),
+                }
+            )
+            last_imu = imu
+        last_time = now
+
+    ok = bool(samples)
+    result = _base_payload(
+        {
+            "ok": ok,
+            "mode": "gyro_yaw_integration",
+            "duration_s": round(time.monotonic() - start, 3),
+            "deadband_dps": deadband_dps,
+            "delta_yaw_deg": round(delta_yaw, 2) if ok else None,
+            "sample_count": len(samples),
+            "last_imu": _imu_brief(last_imu or {}),
+            "samples": samples[-10:],
+            "summary": _gyro_summary(delta_yaw if ok else None, len(samples)),
+            "robot_action_executed": False,
+        }
+    )
+    if not ok:
+        result["error"] = "gyro_yaw_rate_unavailable"
+        result["message"] = "No valid BNO055 yaw_rate_dps sample was available."
+    return result
+
+
+def _refresh_yaw_from_imu(state: dict[str, Any], imu: dict[str, Any]) -> dict[str, Any]:
+    if imu.get("skipped") is True:
+        state["pose"] = _round_pose(_pose_from_state(state))
+        return state
+
+    pose = _pose_from_state(state)
+    warnings = list(state.get("warnings") if isinstance(state.get("warnings"), list) else [])
+    if imu.get("ok") is not True:
+        if "imu_unavailable" not in warnings:
+            warnings.append("imu_unavailable")
+        state["localization_ok"] = False
+        state["confidence"] = min(float(state.get("confidence") or 0.35), 0.45)
+    else:
+        state["localization_ok"] = True
+        state["confidence"] = max(float(state.get("confidence") or 0.35), 0.55)
+        warnings = [item for item in warnings if item not in {"imu_unavailable", "imu_yaw_unknown"}]
+        yaw_rate = _optional_float((imu.get("posture") or {}).get("yaw_rate_dps"))
+        warnings = [item for item in warnings if not str(item).startswith("yaw_unstable:")]
+        if yaw_rate is not None and abs(yaw_rate) > DEFAULT_STABLE_YAW_RATE_DPS:
+            warnings.append(f"yaw_unstable:{yaw_rate:.1f}deg/s")
+        calibration = imu.get("calibration") if isinstance(imu.get("calibration"), dict) else {}
+        if calibration and not bool(calibration.get("calibrated")):
+            if "euler_yaw_uncalibrated_reference_only" not in warnings:
+                warnings.append("euler_yaw_uncalibrated_reference_only")
+    state["pose"] = _round_pose(pose)
+    state["warnings"] = warnings
+    return state
+
+
+def _estimate_action_delta(command_id: str, params: dict[str, Any]) -> dict[str, float]:
+    forward_m = _optional_float(params.get("distance_m"))
+    strafe_m = _optional_float(params.get("strafe_m"))
+    dyaw_deg = 0.0
+
+    if forward_m is None:
+        if command_id == "walk_forward_step":
+            forward_m = DEFAULT_STEP_DISTANCE_M
+        elif command_id in {"unsupported_backward", "walk_backward_step"}:
+            forward_m = -DEFAULT_STEP_DISTANCE_M
+        else:
+            forward_m = 0.0
+
+    if strafe_m is None:
+        if command_id == "strafe_left_step":
+            strafe_m = DEFAULT_STRAFE_DISTANCE_M
+        elif command_id == "strafe_right_step":
+            strafe_m = -DEFAULT_STRAFE_DISTANCE_M
+        else:
+            strafe_m = 0.0
+
+    if command_id == "turn_degrees":
+        degrees = _optional_float(params.get("degrees")) or 0.0
+        direction = _optional_float(params.get("direction"))
+        if direction is None:
+            direction = 1.0
+        dyaw_deg = abs(degrees) * (1.0 if direction >= 0 else -1.0)
+    elif command_id in {"turn_left_small", "turn_left_3s"}:
+        dyaw_deg = DEFAULT_SMALL_TURN_DEG if command_id == "turn_left_small" else 45.0
+    elif command_id in {"turn_right_small", "turn_right_3s"}:
+        dyaw_deg = -DEFAULT_SMALL_TURN_DEG if command_id == "turn_right_small" else -45.0
+
+    return {
+        "forward_m": round(float(forward_m), 3),
+        "strafe_m": round(float(strafe_m), 3),
+        "dyaw_deg": round(_normalize_deg(dyaw_deg), 2),
+    }
+
+
+def _action_params_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    if args.params_json:
+        try:
+            loaded = json.loads(args.params_json)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--params-json is not valid JSON: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise SystemExit("--params-json must be a JSON object")
+        params.update(loaded)
+    if args.direction is not None:
+        params["direction"] = args.direction
+    if args.degrees is not None:
+        params["degrees"] = args.degrees
+    if args.distance_m is not None:
+        params["distance_m"] = args.distance_m
+    if args.strafe_m is not None:
+        params["strafe_m"] = args.strafe_m
+    return params
+
+
+def _load_or_default_state(path: Path, *, skip_imu: bool) -> dict[str, Any]:
+    if path.is_file():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
+    return reset_state(state_path=path, skip_imu=skip_imu, origin_label="auto_reset")
+
+
+def _append_history(path: Path, action: dict[str, Any] | None, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    event = {
+        "timestamp": _now_iso(),
+        "action": action,
+        "pose": state.get("pose"),
+        "confidence": state.get("confidence"),
+        "summary": state.get("summary"),
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def _posture_yaw(imu: dict[str, Any]) -> float | None:
+    posture = imu.get("posture") if isinstance(imu.get("posture"), dict) else {}
+    return _optional_float(posture.get("yaw_deg"))
+
+
+def _imu_brief(imu: dict[str, Any]) -> dict[str, Any]:
+    posture = imu.get("posture") if isinstance(imu.get("posture"), dict) else {}
+    calibration = imu.get("calibration") if isinstance(imu.get("calibration"), dict) else {}
+    return {
+        "ok": imu.get("ok") is True,
+        "safe_for_navigation": imu.get("safe_for_navigation"),
+        "summary": imu.get("summary"),
+        "yaw_deg": _optional_float(posture.get("yaw_deg")),
+        "pitch_deg": _optional_float(posture.get("pitch_deg")),
+        "roll_deg": _optional_float(posture.get("roll_deg")),
+        "yaw_rate_dps": _optional_float(posture.get("yaw_rate_dps")),
+        "calibration": calibration,
+        "error": imu.get("error"),
+    }
+
+
+def _pose_from_state(state: dict[str, Any]) -> dict[str, float]:
+    pose = state.get("pose") if isinstance(state.get("pose"), dict) else {}
+    return {
+        "x_m": _optional_float(pose.get("x_m")) or 0.0,
+        "y_m": _optional_float(pose.get("y_m")) or 0.0,
+        "yaw_deg": _optional_float(pose.get("yaw_deg")) or 0.0,
+    }
+
+
+def _round_pose(pose: dict[str, float]) -> dict[str, float]:
+    return {
+        "x_m": round(float(pose["x_m"]), 3),
+        "y_m": round(float(pose["y_m"]), 3),
+        "yaw_deg": round(_normalize_deg(float(pose["yaw_deg"])), 2),
+    }
+
+
+def _confidence_after_action(confidence: float, delta: dict[str, float]) -> float:
+    movement = abs(delta["forward_m"]) + abs(delta["strafe_m"]) + abs(delta["dyaw_deg"]) / 90.0
+    return round(max(0.2, min(0.95, confidence - movement * 0.03)), 2)
+
+
+def _confidence_after_gyro(confidence: float, result: dict[str, Any]) -> float:
+    sample_count = int(result.get("sample_count") or 0)
+    delta_yaw = abs(_optional_float(result.get("delta_yaw_deg")) or 0.0)
+    if sample_count <= 0:
+        return round(max(0.2, min(confidence, 0.45)), 2)
+    penalty = min(0.08, delta_yaw / 360.0 * 0.04)
+    return round(max(0.25, min(0.9, confidence + 0.02 - penalty)), 2)
+
+
+def _summary_from_state(state: dict[str, Any]) -> str:
+    pose = _pose_from_state(state)
+    confidence = float(state.get("confidence") or 0.0)
+    return _summary(pose["x_m"], pose["y_m"], pose["yaw_deg"], confidence)
+
+
+def _summary(x_m: float, y_m: float, yaw_deg: float, confidence: float) -> str:
+    return (
+        f"\u76f8\u5bf9\u4f4d\u7f6e: x={x_m:.2f}m, y={y_m:.2f}m, "
+        f"\u671d\u5411={yaw_deg:.1f}deg, \u7f6e\u4fe1\u5ea6={confidence:.2f}"
+    )
+
+
+def _gyro_summary(delta_yaw_deg: float | None, sample_count: int) -> str:
+    if delta_yaw_deg is None:
+        return "gyro_z积分失败: 没有读到有效转速"
+    return f"gyro_z积分: 本次转角 {delta_yaw_deg:.1f}deg, 样本 {sample_count} 个"
+
+
+def _print_payload(payload: dict[str, Any], *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    print(_brief_text(payload))
+
+
+def _brief_text(payload: dict[str, Any]) -> str:
+    if payload.get("mode") == "gyro_yaw_integration":
+        summary = str(payload.get("summary") or "gyro_z积分完成")
+        state = payload.get("localization_state") if isinstance(payload.get("localization_state"), dict) else None
+        if state:
+            pose = _pose_from_state(state)
+            return f"{summary} | 当前yaw={pose['yaw_deg']:.1f}deg"
+        return summary
+
+    if payload.get("mode") == MODE and "pose" in payload:
+        pose = _pose_from_state(payload)
+        confidence = _optional_float(payload.get("confidence")) or 0.0
+        imu = payload.get("imu") if isinstance(payload.get("imu"), dict) else {}
+        imu_state = "IMU正常" if imu.get("ok") is True else "IMU未用"
+        yaw_rate = _optional_float(imu.get("yaw_rate_dps"))
+        yaw_rate_text = "未知" if yaw_rate is None else f"{yaw_rate:.1f}deg/s"
+        action = payload.get("last_action") if isinstance(payload.get("last_action"), dict) else None
+        action_text = ""
+        if action:
+            delta = action.get("estimated_delta") if isinstance(action.get("estimated_delta"), dict) else {}
+            dyaw = _optional_float(delta.get("dyaw_deg"))
+            forward = _optional_float(delta.get("forward_m"))
+            strafe = _optional_float(delta.get("strafe_m"))
+            parts = [str(action.get("command_id") or "unknown")]
+            if dyaw:
+                parts.append(f"转向{dyaw:.1f}deg")
+            if forward:
+                parts.append(f"前进{forward:.2f}m")
+            if strafe:
+                parts.append(f"横移{strafe:.2f}m")
+            action_text = " | 最近动作: " + ", ".join(parts)
+        warning_text = _brief_warnings(payload)
+        return (
+            f"定位: x={pose['x_m']:.2f}m, y={pose['y_m']:.2f}m, "
+            f"yaw={pose['yaw_deg']:.1f}deg | 置信度={confidence:.2f} | "
+            f"{imu_state}, 转速={yaw_rate_text}{action_text}{warning_text}"
+        )
+
+    message = payload.get("message") or payload.get("summary") or "定位工具已响应"
+    return f"{payload.get('source', SOURCE)}: {message}"
+
+
+def _brief_warnings(payload: dict[str, Any]) -> str:
+    warnings = payload.get("warnings")
+    if not isinstance(warnings, list) or not warnings:
+        return ""
+    readable: list[str] = []
+    for item in warnings:
+        text = str(item)
+        if text.startswith("yaw_unstable:"):
+            readable.append(f"朝向还在变化({text.split(':', 1)[1]})")
+        elif text == "imu_yaw_unknown":
+            readable.append("IMU朝向未知")
+        else:
+            readable.append(text)
+    return " | 提醒: " + "；".join(readable)
+
+
+def _resolve_state_path(path: str | Path | None) -> Path:
+    if path is not None:
+        return Path(path).expanduser()
+    return _project_root() / "data" / "localization" / "localization_state.json"
+
+
+def _resolve_history_path(path: str | Path | None) -> Path:
+    if path is not None:
+        return Path(path).expanduser()
+    return _project_root() / "data" / "localization" / "localization_history.jsonl"
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _normalize_deg(value: float) -> float:
+    return ((float(value) + 180.0) % 360.0) - 180.0
+
+
+def _base_payload(extra: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "source": SOURCE,
+        "timestamp": _now_iso(),
+        **extra,
+    }
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

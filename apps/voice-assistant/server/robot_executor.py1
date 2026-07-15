@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+import socket
+from typing import Any
+
+from server.config import (
+    ROBOT_COMMAND_HOST,
+    ROBOT_COMMAND_PORT,
+    ROBOT_COMMAND_TIMEOUT_SECONDS,
+)
+from server.robot_commands import RobotCommand
+
+
+@dataclass(frozen=True)
+class RobotExecutionResult:
+    handled: bool
+    success: bool
+    reply_text: str
+    detail: str | None = None
+
+
+def execute_robot_command(command: RobotCommand) -> RobotExecutionResult:
+    if command.command_id == "unsupported_backward":
+        return RobotExecutionResult(
+            handled=True,
+            success=False,
+            reply_text=command.reply_on_match,
+            detail="unsupported_backward",
+        )
+
+    payload = _build_payload(command)
+    try:
+        response = _send_payload(payload)
+    except (OSError, ValueError) as exc:
+        return RobotExecutionResult(
+            handled=True,
+            success=False,
+            reply_text=(
+                "\u673a\u5668\u4eba\u8fd0\u884c\u7a0b\u5e8f\u672a\u542f\u52a8"
+                "\uff0c\u65e0\u6cd5\u6267\u884c\u52a8\u4f5c\u3002"
+            ),
+            detail=str(exc),
+        )
+
+    if not response:
+        return RobotExecutionResult(
+            handled=True,
+            success=True,
+            reply_text=f"{command.reply_on_match}\uff0c\u5df2\u53d1\u9001\u5230\u673a\u5668\u4eba\u8fd0\u884c\u7a0b\u5e8f\u3002",
+        )
+
+    if response.get("ok") is True:
+        reply_text = response.get("message")
+        if not isinstance(reply_text, str) or not reply_text.strip():
+            reply_text = f"{command.reply_on_match}\uff0c\u5df2\u6267\u884c\u3002"
+        return RobotExecutionResult(
+            handled=True,
+            success=True,
+            reply_text=reply_text.strip(),
+        )
+
+    reply_text = response.get("message")
+    if not isinstance(reply_text, str) or not reply_text.strip():
+        reply_text = "\u673a\u5668\u4eba\u547d\u4ee4\u6267\u884c\u5931\u8d25\u3002"
+    return RobotExecutionResult(
+        handled=True,
+        success=False,
+        reply_text=reply_text.strip(),
+        detail=json.dumps(response, ensure_ascii=False),
+    )
+
+
+def _build_payload(command: RobotCommand) -> dict[str, Any]:
+    params: dict[str, Any] = dict(command.params)
+    if command.duration_s is not None:
+        params["duration_s"] = command.duration_s
+    if command.cooldown_s:
+        params["cooldown_s"] = command.cooldown_s
+    return {
+        "type": "robot_command",
+        "command_id": command.command_id,
+        "priority": command.priority,
+        "params": params,
+    }
+
+
+def _send_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    encoded = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+    with socket.create_connection(
+        (ROBOT_COMMAND_HOST, ROBOT_COMMAND_PORT),
+        timeout=ROBOT_COMMAND_TIMEOUT_SECONDS,
+    ) as sock:
+        sock.settimeout(ROBOT_COMMAND_TIMEOUT_SECONDS)
+        sock.sendall(encoded)
+        try:
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        raw = sock.recv(4096)
+
+    if not raw:
+        return None
+    decoded = raw.decode("utf-8", errors="replace").strip()
+    if not decoded:
+        return None
+    response = json.loads(decoded)
+    if not isinstance(response, dict):
+        return {
+            "ok": False,
+            "message": "\u673a\u5668\u4eba\u8fd0\u884c\u7a0b\u5e8f\u8fd4\u56de\u683c\u5f0f\u9519\u8bef\u3002",
+        }
+    return response

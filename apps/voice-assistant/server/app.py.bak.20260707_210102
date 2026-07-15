@@ -1,0 +1,282 @@
+import asyncio
+import logging
+import time
+from typing import Any
+
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
+
+from server.config import APP_NAME, INFERENCE_TIMEOUT_SECONDS, REJECT_WHEN_MODEL_BUSY
+from server.connection_manager import ConnectionManager
+from server.inference import InferenceError, generate_reply
+from server.robot_commands import build_direct_robot_command
+from server.robot_commands import match_robot_command
+from server.robot_executor import execute_robot_command
+from server.schemas import (
+    ChatRequest,
+    ProtocolError,
+    RobotCommandRequest,
+    error_response,
+    parse_client_message,
+    pong_response,
+    reply_response,
+)
+from server.video_stream import MJPEG_BOUNDARY, mjpeg_frame_generator, video_status_payload
+
+
+CLIENT_REPLY_DEADLINE_SECONDS = 90.0
+
+app = FastAPI(title=APP_NAME)
+manager = ConnectionManager()
+inference_lock = asyncio.Lock()
+logger = logging.getLogger(__name__)
+
+
+@app.get("/healthz")
+async def healthz() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "service": APP_NAME,
+        "active_connections": manager.active_count,
+    }
+
+
+@app.get("/video/status")
+async def video_status(
+    device: str | None = None,
+    probe: bool = False,
+) -> dict[str, object]:
+    return video_status_payload(device=device, probe=probe)
+
+
+@app.get("/video/stream")
+async def video_stream(
+    device: str | None = None,
+    width: int = Query(640, ge=160, le=1920),
+    height: int = Query(480, ge=120, le=1080),
+    fps: int = Query(15, ge=1, le=30),
+    quality: int = Query(80, ge=40, le=95),
+) -> StreamingResponse:
+    return StreamingResponse(
+        mjpeg_frame_generator(
+            device=device,
+            width=width,
+            height=height,
+            fps=fps,
+            quality=quality,
+        ),
+        media_type=f"multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket) -> None:
+    await manager.connect(websocket)
+    peer = websocket.client
+    logger.info("websocket connected peer=%s", peer)
+    try:
+        while True:
+            raw_message = await websocket.receive_text()
+            started_at = time.perf_counter()
+            request_id = None
+            session_id = None
+
+            try:
+                request = parse_client_message(raw_message)
+                request_id = request.request_id
+
+                if not isinstance(request, ChatRequest):
+                    if isinstance(request, RobotCommandRequest):
+                        command = build_direct_robot_command(
+                            request.command_id,
+                            params=request.params,
+                            priority=request.priority,
+                        )
+                        if command is None:
+                            if not await _safe_send_json(
+                                websocket,
+                                _client_error_response(
+                                    "UNSUPPORTED_ROBOT_COMMAND",
+                                    "\u4e0d\u652f\u6301\u7684\u673a\u5668\u4eba\u76f4\u63a7\u547d\u4ee4",
+                                    request_id=request.request_id,
+                                    session_id=request.session_id,
+                                ),
+                                peer,
+                            ):
+                                return
+                            continue
+                        result = await asyncio.to_thread(
+                            execute_robot_command,
+                            command,
+                        )
+                        latency_ms = int((time.perf_counter() - started_at) * 1000)
+                        if not await _safe_send_json(
+                            websocket,
+                            reply_response(
+                                request_id=request.request_id,
+                                session_id=request.session_id or "robot-control",
+                                text=result.reply_text,
+                                latency_ms=latency_ms,
+                            ),
+                            peer,
+                        ):
+                            return
+                        continue
+
+                    if not await _safe_send_json(websocket, pong_response(request.request_id), peer):
+                        return
+                    continue
+
+                session_id = request.session_id
+                robot_command = match_robot_command(request.text)
+                if robot_command is not None:
+                    result = await asyncio.to_thread(
+                        execute_robot_command,
+                        robot_command,
+                    )
+                    latency_ms = int((time.perf_counter() - started_at) * 1000)
+                    if not await _safe_send_json(
+                        websocket,
+                        reply_response(
+                            request_id=request.request_id,
+                            session_id=request.session_id,
+                            text=result.reply_text,
+                            latency_ms=latency_ms,
+                        ),
+                        peer,
+                    ):
+                        return
+                    continue
+
+                if REJECT_WHEN_MODEL_BUSY and inference_lock.locked():
+                    if not await _safe_send_json(
+                        websocket,
+                        _client_error_response(
+                            "MODEL_BUSY",
+                            "\u672c\u5730\u6a21\u578b\u6b63\u5728\u5904\u7406\u5176\u4ed6\u8bf7\u6c42",
+                            request_id=request.request_id,
+                            session_id=request.session_id,
+                            retryable=True,
+                        ),
+                        peer,
+                    ):
+                        return
+                    continue
+
+                model_timeout_s = min(INFERENCE_TIMEOUT_SECONDS, CLIENT_REPLY_DEADLINE_SECONDS)
+                async with inference_lock:
+                    reply_text = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            generate_reply,
+                            request.text,
+                            request.session_id,
+                        ),
+                        timeout=model_timeout_s,
+                    )
+
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                if not await _safe_send_json(
+                    websocket,
+                    reply_response(
+                        request_id=request.request_id,
+                        session_id=request.session_id,
+                        text=reply_text,
+                        latency_ms=latency_ms,
+                    ),
+                    peer,
+                ):
+                    return
+            except ProtocolError as exc:
+                if not await _safe_send_json(
+                    websocket,
+                    _client_error_response(
+                        exc.code,
+                        exc.message,
+                        request_id=exc.request_id or request_id,
+                        session_id=exc.session_id or session_id,
+                        retryable=exc.retryable,
+                    ),
+                    peer,
+                ):
+                    return
+            except (asyncio.TimeoutError, TimeoutError):
+                if not await _safe_send_json(
+                    websocket,
+                    _client_error_response(
+                        "MODEL_TIMEOUT",
+                        "\u6a21\u578b90\u79d2\u5185\u6ca1\u6709\u56de\u590d\uff0c\u5df2\u8d85\u8fc7\u7b49\u5f85\u65f6\u95f4\uff0c\u8bf7\u6362\u4e00\u4e2a\u66f4\u77ed\u7684\u95ee\u9898\uff0c\u6216\u7a0d\u540e\u518d\u8bd5\u3002",
+                        request_id=request_id,
+                        session_id=session_id,
+                        retryable=True,
+                    ),
+                    peer,
+                ):
+                    return
+            except InferenceError as exc:
+                if not await _safe_send_json(
+                    websocket,
+                    _client_error_response(
+                        exc.code,
+                        exc.message,
+                        request_id=request_id,
+                        session_id=session_id,
+                        retryable=exc.retryable,
+                    ),
+                    peer,
+                ):
+                    return
+            except Exception:
+                logger.exception("websocket request failed peer=%s", peer)
+                if not await _safe_send_json(
+                    websocket,
+                    _client_error_response(
+                        "INTERNAL_ERROR",
+                        "\u670d\u52a1\u7aef\u5904\u7406\u8bf7\u6c42\u5931\u8d25",
+                        request_id=request_id,
+                        session_id=session_id,
+                        retryable=True,
+                    ),
+                    peer,
+                ):
+                    return
+    except WebSocketDisconnect:
+        logger.info("websocket disconnected peer=%s", peer)
+    finally:
+        manager.disconnect(websocket)
+
+
+async def _safe_send_json(websocket: WebSocket, payload: dict[str, Any], peer: object) -> bool:
+    try:
+        await websocket.send_json(payload)
+        return True
+    except WebSocketDisconnect:
+        logger.info("websocket send skipped after disconnect peer=%s", peer)
+    except RuntimeError as exc:
+        logger.info("websocket send skipped peer=%s error=%s", peer, exc)
+    except OSError as exc:
+        logger.info("websocket send failed peer=%s error=%s", peer, exc)
+    return False
+
+
+def _client_error_response(
+    code: str,
+    message: str,
+    *,
+    request_id: str | None = None,
+    session_id: str | None = None,
+    retryable: bool = False,
+) -> dict[str, Any]:
+    payload = error_response(
+        code,
+        message,
+        request_id=request_id,
+        session_id=session_id,
+        retryable=retryable,
+    )
+    payload["text"] = message
+    return payload

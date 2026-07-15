@@ -1,0 +1,643 @@
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from server.imu_posture_tool import read_posture
+from server.localization_state_tool import observe_state
+from server.realsense_depth_tool import (
+    DEFAULT_DEPTH_SCALE,
+    DEFAULT_V4L2_DEPTH_DEVICE,
+)
+
+
+TOOL_VERSION = "0.1"
+SOURCE = "vla-context-builder"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "vla"
+DEFAULT_CONTEXT_PATH = DEFAULT_OUTPUT_DIR / "context_latest.json"
+DEFAULT_RECENT_ACTIONS = 8
+DEFAULT_RGB_TIMEOUT_S = 12.0
+DEFAULT_DEPTH_TIMEOUT_S = 25.0
+DEFAULT_OBSERVATION_PATH = PROJECT_ROOT / "data" / "vision" / "observation_latest.json"
+
+
+def context_status() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "source": SOURCE,
+        "tool_version": TOOL_VERSION,
+        "message": "只读 VLA 上下文构建器：收集图像、深度、姿态、定位和最近动作，不控制机器人。",
+        "default_context_path": str(DEFAULT_CONTEXT_PATH),
+        "robot_action_executed": False,
+    }
+
+
+def build_context(
+    *,
+    instruction: str,
+    output_path: str | Path | None = DEFAULT_CONTEXT_PATH,
+    skip_rgb: bool = False,
+    skip_depth: bool = False,
+    skip_imu: bool = False,
+    skip_localization: bool = False,
+    rgb_device: str | None = None,
+    depth_device: str = DEFAULT_V4L2_DEPTH_DEVICE,
+    depth_backend: str = "v4l2",
+    width: int = 640,
+    height: int = 480,
+    fps: int = 15,
+    rgb_warmup_frames: int = 3,
+    depth_warmup_frames: int = 3,
+    depth_scale: float = DEFAULT_DEPTH_SCALE,
+    rgb_timeout_s: float = DEFAULT_RGB_TIMEOUT_S,
+    depth_timeout_s: float = DEFAULT_DEPTH_TIMEOUT_S,
+    recent_actions: int = DEFAULT_RECENT_ACTIONS,
+    use_observation: bool = False,
+    observation_path: str | Path = DEFAULT_OBSERVATION_PATH,
+) -> dict[str, Any]:
+    timestamp = _now_iso()
+    root = _context_output_root()
+    run_dir = root / f"context_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    vision_observation: dict[str, Any] | None = None
+    if use_observation:
+        vision_observation = _load_observation_payload(observation_path)
+        rgb = _rgb_from_observation(vision_observation)
+        depth = _depth_from_observation(vision_observation)
+    else:
+        rgb = _capture_rgb(
+            run_dir=run_dir,
+            skip=skip_rgb,
+            device=rgb_device,
+            width=width,
+            height=height,
+            warmup_frames=rgb_warmup_frames,
+            timeout_s=rgb_timeout_s,
+        )
+        depth = _capture_depth(
+            run_dir=run_dir,
+            skip=skip_depth,
+            device=depth_device,
+            backend=depth_backend,
+            width=width,
+            height=height,
+            fps=fps,
+            warmup_frames=depth_warmup_frames,
+            depth_scale=depth_scale,
+            timeout_s=depth_timeout_s,
+        )
+    imu = _read_imu(skip=skip_imu, output_dir=run_dir)
+    localization = _read_localization(skip=skip_localization, output_dir=run_dir)
+    recent = _read_recent_actions(limit=recent_actions)
+    safety = _safety_notes(depth=depth, imu=imu, localization=localization)
+
+    payload = {
+        "ok": True,
+        "source": SOURCE,
+        "tool_version": TOOL_VERSION,
+        "mode": "vla_context",
+        "timestamp": timestamp,
+        "instruction": instruction,
+        "output_dir": str(run_dir),
+        "image": _image_payload(rgb),
+        "depth": _depth_payload(depth),
+        "vision_observation": _vision_observation_payload(vision_observation),
+        "imu": _imu_payload(imu),
+        "localization": _localization_payload(localization),
+        "recent_actions": recent,
+        "safety_notes": safety,
+        "raw": {
+            "rgb": rgb,
+            "depth": depth,
+            "vision_observation": vision_observation,
+            "imu": imu,
+            "localization": localization,
+        },
+        "robot_action_executed": False,
+    }
+    payload["summary"] = _summary(payload)
+    if output_path is not None:
+        _write_json(Path(output_path).expanduser(), payload)
+    return payload
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "status":
+        payload = context_status()
+    elif args.command == "build":
+        payload = build_context(
+            instruction=args.instruction,
+            output_path=args.output,
+            skip_rgb=args.skip_rgb,
+            skip_depth=args.skip_depth,
+            skip_imu=args.skip_imu,
+            skip_localization=args.skip_localization,
+            rgb_device=args.rgb_device,
+            depth_device=args.depth_device,
+            depth_backend=args.depth_backend,
+            width=args.width,
+            height=args.height,
+            fps=args.fps,
+            rgb_warmup_frames=args.rgb_warmup_frames,
+            depth_warmup_frames=args.depth_warmup_frames,
+            depth_scale=args.depth_scale,
+            rgb_timeout_s=args.rgb_timeout,
+            depth_timeout_s=args.depth_timeout,
+            recent_actions=args.recent_actions,
+            use_observation=args.use_observation,
+            observation_path=args.observation_path,
+        )
+    else:
+        parser.error("missing command")
+
+    _print_payload(payload, output_format=args.format)
+    return 0 if payload.get("ok") is True else 1
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m server.vla_context_builder",
+        description="Build a read-only context JSON for VLA/Qwen-VL planning.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    status_parser = subparsers.add_parser("status", help="Print tool status.")
+    _add_format_arg(status_parser)
+
+    build_parser = subparsers.add_parser("build", help="Build one VLA context JSON.")
+    build_parser.add_argument("--instruction", required=True)
+    build_parser.add_argument("--output", default=str(DEFAULT_CONTEXT_PATH))
+    build_parser.add_argument("--skip-rgb", action="store_true")
+    build_parser.add_argument("--skip-depth", action="store_true")
+    build_parser.add_argument("--skip-imu", action="store_true")
+    build_parser.add_argument("--skip-localization", action="store_true")
+    build_parser.add_argument("--rgb-device")
+    build_parser.add_argument("--depth-device", default=DEFAULT_V4L2_DEPTH_DEVICE)
+    build_parser.add_argument("--depth-backend", choices=("auto", "pyrealsense2", "v4l2"), default="v4l2")
+    build_parser.add_argument("--width", type=int, default=640)
+    build_parser.add_argument("--height", type=int, default=480)
+    build_parser.add_argument("--fps", type=int, default=15)
+    build_parser.add_argument("--rgb-warmup-frames", type=int, default=3)
+    build_parser.add_argument("--depth-warmup-frames", type=int, default=3)
+    build_parser.add_argument("--depth-scale", type=float, default=DEFAULT_DEPTH_SCALE)
+    build_parser.add_argument("--rgb-timeout", type=float, default=DEFAULT_RGB_TIMEOUT_S)
+    build_parser.add_argument("--depth-timeout", type=float, default=DEFAULT_DEPTH_TIMEOUT_S)
+    build_parser.add_argument("--recent-actions", type=int, default=DEFAULT_RECENT_ACTIONS)
+    build_parser.add_argument("--use-observation", action="store_true", help="Read data/vision/observation_latest.json instead of capturing RGB/depth.")
+    build_parser.add_argument("--observation-path", default=str(DEFAULT_OBSERVATION_PATH), help="Vision observation JSON path used with --use-observation.")
+    _add_format_arg(build_parser)
+    return parser
+
+
+def _add_format_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--format",
+        choices=("json", "brief"),
+        default="json",
+        help="Output format. Use brief for a short human-readable line.",
+    )
+
+
+def _capture_rgb(
+    *,
+    run_dir: Path,
+    skip: bool,
+    device: str | None,
+    width: int,
+    height: int,
+    warmup_frames: int,
+    timeout_s: float,
+) -> dict[str, Any]:
+    if skip:
+        return _skipped("rgb_skipped")
+    command = [
+        sys.executable,
+        "-m",
+        "server.realsense_camera_tool",
+        "capture",
+        "--output",
+        str(run_dir / "rgb.jpg"),
+        "--width",
+        str(width),
+        "--height",
+        str(height),
+        "--warmup-frames",
+        str(warmup_frames),
+    ]
+    if device:
+        command.extend(["--device", device])
+    return _run_json_tool(command, timeout_s=timeout_s, timeout_error="rgb_timeout")
+
+
+def _capture_depth(
+    *,
+    run_dir: Path,
+    skip: bool,
+    device: str,
+    backend: str,
+    width: int,
+    height: int,
+    fps: int,
+    warmup_frames: int,
+    depth_scale: float,
+    timeout_s: float,
+) -> dict[str, Any]:
+    if skip:
+        return _skipped("depth_skipped")
+    command = [
+        sys.executable,
+        "-m",
+        "server.realsense_depth_tool",
+        "capture",
+        "--output-dir",
+        str(run_dir / "depth"),
+        "--width",
+        str(width),
+        "--height",
+        str(height),
+        "--fps",
+        str(fps),
+        "--warmup-frames",
+        str(warmup_frames),
+        "--no-color",
+        "--backend",
+        backend,
+        "--device",
+        device,
+        "--depth-scale",
+        str(depth_scale),
+    ]
+    return _run_json_tool(command, timeout_s=timeout_s, timeout_error="depth_timeout")
+
+
+def _read_imu(*, skip: bool, output_dir: Path) -> dict[str, Any]:
+    if skip:
+        return _skipped("imu_skipped")
+    return read_posture(output_path=output_dir / "imu_posture.json")
+
+
+def _read_localization(*, skip: bool, output_dir: Path) -> dict[str, Any]:
+    if skip:
+        return _skipped("localization_skipped")
+    return observe_state(output_path=output_dir / "localization_state.json")
+
+
+def _run_json_tool(command: list[str], *, timeout_s: float, timeout_error: str) -> dict[str, Any]:
+    timeout_s = max(1.0, min(120.0, float(timeout_s)))
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "error": timeout_error,
+            "message": f"Tool timed out after {timeout_s:.1f}s.",
+            "command": command,
+            "robot_action_executed": False,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "tool_launch_failed",
+            "message": str(exc),
+            "command": command,
+            "robot_action_executed": False,
+        }
+
+    stdout = completed.stdout.strip()
+    if not stdout:
+        return {
+            "ok": False,
+            "error": "tool_no_output",
+            "message": completed.stderr.strip(),
+            "returncode": completed.returncode,
+            "command": command,
+            "robot_action_executed": False,
+        }
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return {
+            "ok": False,
+            "error": "tool_invalid_json",
+            "message": stdout[-1000:],
+            "stderr": completed.stderr.strip()[-1000:],
+            "returncode": completed.returncode,
+            "command": command,
+            "robot_action_executed": False,
+        }
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "error": "tool_json_not_object",
+            "returncode": completed.returncode,
+            "command": command,
+            "robot_action_executed": False,
+        }
+    payload.setdefault("robot_action_executed", False)
+    if completed.returncode != 0 and payload.get("ok") is True:
+        payload["ok"] = False
+        payload["returncode"] = completed.returncode
+    if completed.stderr.strip():
+        payload["stderr"] = completed.stderr.strip()[-1000:]
+    return payload
+
+
+def _read_recent_actions(*, limit: int) -> list[dict[str, Any]]:
+    limit = max(0, min(50, int(limit)))
+    if limit == 0:
+        return []
+    path = PROJECT_ROOT / "data" / "localization" / "localization_action_log.jsonl"
+    if not path.is_file():
+        return []
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    items: list[dict[str, Any]] = []
+    for line in lines[-limit:]:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            items.append(payload)
+    return items
+
+
+def _load_observation_payload(path: str | Path) -> dict[str, Any]:
+    resolved = Path(path).expanduser()
+    if not resolved.is_file():
+        return {
+            "ok": False,
+            "source": "vision-observation",
+            "error": "observation_not_found",
+            "message": f"Vision observation does not exist: {resolved}",
+            "observation_path": str(resolved),
+            "robot_action_executed": False,
+        }
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "source": "vision-observation",
+            "error": "observation_read_failed",
+            "message": str(exc),
+            "observation_path": str(resolved),
+            "robot_action_executed": False,
+        }
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "source": "vision-observation",
+            "error": "observation_invalid_json",
+            "message": "Vision observation root must be an object.",
+            "observation_path": str(resolved),
+            "robot_action_executed": False,
+        }
+    payload.setdefault("observation_path", str(resolved))
+    payload.setdefault("robot_action_executed", False)
+    return payload
+
+
+def _rgb_from_observation(observation: dict[str, Any]) -> dict[str, Any]:
+    device_map = observation.get("device_map") if isinstance(observation.get("device_map"), dict) else {}
+    return {
+        "ok": observation.get("rgb_ok") is True,
+        "source": "vision-observation",
+        "image_path": observation.get("rgb_path"),
+        "width": observation.get("rgb_width") or device_map.get("width"),
+        "height": observation.get("rgb_height") or device_map.get("height"),
+        "timestamp": observation.get("timestamp"),
+        "camera": {
+            "device": device_map.get("rgb_device"),
+            "camera": device_map.get("camera"),
+            "mode": "vision-observation",
+        },
+        "error": observation.get("rgb_error") or observation.get("error"),
+        "robot_action_executed": False,
+    }
+
+
+def _depth_from_observation(observation: dict[str, Any]) -> dict[str, Any]:
+    obstacle = {
+        "ok": observation.get("depth_ok") is True,
+        "source": "vision-observation",
+        "front_min_distance_m": observation.get("front_min_distance_m"),
+        "left_min_distance_m": observation.get("left_min_distance_m"),
+        "right_min_distance_m": observation.get("right_min_distance_m"),
+        "blocked": observation.get("blocked"),
+        "valid_depth_ratio": observation.get("valid_depth_ratio"),
+        "robot_action_executed": False,
+    }
+    dry_run = {
+        "ok": observation.get("depth_ok") is True,
+        "source": "navigation-dry-run",
+        "suggested_action": observation.get("suggested_action"),
+        "reason": observation.get("reason"),
+        "front_min_distance_m": observation.get("front_min_distance_m"),
+        "left_min_distance_m": observation.get("left_min_distance_m"),
+        "right_min_distance_m": observation.get("right_min_distance_m"),
+        "blocked": observation.get("blocked"),
+        "valid_depth_ratio": observation.get("valid_depth_ratio"),
+        "robot_action_executed": False,
+    }
+    return {
+        "ok": observation.get("depth_ok") is True,
+        "source": "vision-observation",
+        "output_dir": observation.get("depth_output_dir"),
+        "depth_raw_png": observation.get("depth_raw_png"),
+        "depth_vis_png": observation.get("depth_vis_path"),
+        "depth_m_npy": observation.get("depth_m_npy"),
+        "timestamp": observation.get("timestamp"),
+        "obstacle_summary": obstacle,
+        "navigation_dry_run": dry_run,
+        "error": observation.get("depth_error") or observation.get("error"),
+        "robot_action_executed": False,
+    }
+
+
+def _vision_observation_payload(observation: dict[str, Any] | None) -> dict[str, Any]:
+    if observation is None:
+        return {
+            "used": False,
+            "ok": None,
+        }
+    return {
+        "used": True,
+        "ok": observation.get("ok") is True,
+        "path": observation.get("observation_path"),
+        "output_dir": observation.get("output_dir"),
+        "objects": observation.get("objects") if isinstance(observation.get("objects"), list) else [],
+        "object_depth_fusion": observation.get("object_depth_fusion") if isinstance(observation.get("object_depth_fusion"), dict) else {},
+        "annotated_image_path": observation.get("annotated_image_path"),
+        "safety_notes": observation.get("safety_notes") if isinstance(observation.get("safety_notes"), list) else [],
+        "error": observation.get("error"),
+    }
+
+
+def _image_payload(rgb: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": rgb.get("ok") is True,
+        "path": rgb.get("image_path"),
+        "width": rgb.get("width"),
+        "height": rgb.get("height"),
+        "camera": rgb.get("camera"),
+        "error": rgb.get("error"),
+    }
+
+
+def _depth_payload(depth: dict[str, Any]) -> dict[str, Any]:
+    obstacle = depth.get("obstacle_summary") if isinstance(depth.get("obstacle_summary"), dict) else {}
+    dry_run = depth.get("navigation_dry_run") if isinstance(depth.get("navigation_dry_run"), dict) else {}
+    return {
+        "ok": depth.get("ok") is True,
+        "output_dir": depth.get("output_dir"),
+        "depth_raw_png": depth.get("depth_raw_png"),
+        "depth_vis_png": depth.get("depth_vis_png"),
+        "depth_m_npy": depth.get("depth_m_npy"),
+        "front_min_distance_m": obstacle.get("front_min_distance_m"),
+        "left_min_distance_m": obstacle.get("left_min_distance_m"),
+        "right_min_distance_m": obstacle.get("right_min_distance_m"),
+        "blocked": obstacle.get("blocked"),
+        "valid_depth_ratio": obstacle.get("valid_depth_ratio"),
+        "suggested_action": dry_run.get("suggested_action"),
+        "reason": dry_run.get("reason"),
+        "error": depth.get("error"),
+    }
+
+
+def _imu_payload(imu: dict[str, Any]) -> dict[str, Any]:
+    posture = imu.get("posture") if isinstance(imu.get("posture"), dict) else {}
+    calibration = imu.get("calibration") if isinstance(imu.get("calibration"), dict) else {}
+    return {
+        "ok": imu.get("ok") is True,
+        "safe_for_navigation": imu.get("safe_for_navigation"),
+        "summary": imu.get("summary"),
+        "pitch_deg": posture.get("pitch_deg"),
+        "roll_deg": posture.get("roll_deg"),
+        "yaw_deg": posture.get("yaw_deg"),
+        "yaw_rate_dps": posture.get("yaw_rate_dps"),
+        "accel_norm_mps2": posture.get("accel_norm_mps2"),
+        "calibration": calibration,
+        "warnings": imu.get("warnings") if isinstance(imu.get("warnings"), list) else [],
+        "deny_reasons": imu.get("deny_reasons") if isinstance(imu.get("deny_reasons"), list) else [],
+        "error": imu.get("error"),
+    }
+
+
+def _localization_payload(localization: dict[str, Any]) -> dict[str, Any]:
+    pose = localization.get("pose") if isinstance(localization.get("pose"), dict) else {}
+    return {
+        "ok": localization.get("ok") is True,
+        "localization_ok": localization.get("localization_ok"),
+        "x_m": pose.get("x_m"),
+        "y_m": pose.get("y_m"),
+        "yaw_deg": pose.get("yaw_deg"),
+        "confidence": localization.get("confidence"),
+        "summary": localization.get("summary"),
+        "warnings": localization.get("warnings") if isinstance(localization.get("warnings"), list) else [],
+        "last_action": localization.get("last_action"),
+        "error": localization.get("error"),
+    }
+
+
+def _safety_notes(*, depth: dict[str, Any], imu: dict[str, Any], localization: dict[str, Any]) -> list[str]:
+    notes: list[str] = []
+    obstacle = depth.get("obstacle_summary") if isinstance(depth.get("obstacle_summary"), dict) else {}
+    front = _optional_float(obstacle.get("front_min_distance_m"))
+    blocked = bool(obstacle.get("blocked"))
+    if depth.get("ok") is not True:
+        notes.append("depth_unavailable")
+    elif blocked:
+        notes.append("front_blocked")
+    elif front is not None and front < 0.7:
+        notes.append(f"front_close:{front:.2f}m")
+
+    if imu.get("ok") is not True:
+        notes.append("imu_unavailable")
+    elif imu.get("safe_for_navigation") is not True:
+        notes.append("imu_not_safe")
+
+    if localization.get("ok") is not True:
+        notes.append("localization_unavailable")
+    elif _optional_float(localization.get("confidence")) is not None and float(localization.get("confidence")) < 0.5:
+        notes.append("localization_low_confidence")
+    return notes
+
+
+def _summary(payload: dict[str, Any]) -> str:
+    image = payload.get("image") if isinstance(payload.get("image"), dict) else {}
+    depth = payload.get("depth") if isinstance(payload.get("depth"), dict) else {}
+    imu = payload.get("imu") if isinstance(payload.get("imu"), dict) else {}
+    loc = payload.get("localization") if isinstance(payload.get("localization"), dict) else {}
+    image_state = "ok" if image.get("ok") else "fail"
+    depth_state = "ok" if depth.get("ok") else "fail"
+    imu_state = "ok" if imu.get("ok") else "fail"
+    x = _format_float(loc.get("x_m"), digits=2)
+    y = _format_float(loc.get("y_m"), digits=2)
+    yaw = _format_float(loc.get("yaw_deg"), digits=1)
+    return f"VLA上下文已生成: 图像={image_state}, 深度={depth_state}, 姿态={imu_state}, 定位=x={x}m y={y}m yaw={yaw}deg"
+
+
+def _print_payload(payload: dict[str, Any], *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    print(str(payload.get("summary") or payload.get("message") or "OK"))
+
+
+def _context_output_root() -> Path:
+    DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    return DEFAULT_OUTPUT_DIR
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _skipped(reason: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "skipped": True,
+        "error": reason,
+        "robot_action_executed": False,
+    }
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number
+
+
+def _format_float(value: Any, *, digits: int) -> str:
+    number = _optional_float(value)
+    if number is None:
+        return "未知"
+    return f"{number:.{digits}f}"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

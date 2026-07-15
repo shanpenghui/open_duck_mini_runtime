@@ -1,0 +1,17 @@
+[Unit]
+Description=Voice Assistant llama-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=duck
+Group=duck
+WorkingDirectory=/home/duck/apps/llama.cpp/build/bin
+ExecStart=/home/duck/apps/llama.cpp/build/bin/llama-server -m /home/duck/models/gemma4/gemma-4-E2B-it-Q4_K_M.gguf --host 127.0.0.1 --port 18080 -t 3 -c 2048 --reasoning off
+Restart=always
+RestartSec=5
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

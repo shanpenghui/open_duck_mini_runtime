@@ -1,0 +1,237 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import re
+import unicodedata
+
+
+@dataclass(frozen=True)
+class RobotCommand:
+    command_id: str
+    reply_on_match: str
+    priority: str = "normal"
+    duration_s: float | None = None
+    cooldown_s: float = 0.0
+    params: dict[str, float] = field(default_factory=dict)
+
+
+COMMANDS: dict[str, RobotCommand] = {
+    "stop": RobotCommand(
+        command_id="stop",
+        reply_on_match="\u5df2\u8bc6\u522b\u505c\u6b62\u547d\u4ee4",
+        priority="emergency",
+    ),
+    "pause": RobotCommand(
+        command_id="pause",
+        reply_on_match="\u5df2\u8bc6\u522b\u6682\u505c\u547d\u4ee4",
+        priority="high",
+        cooldown_s=0.5,
+    ),
+    "resume": RobotCommand(
+        command_id="resume",
+        reply_on_match="\u5df2\u8bc6\u522b\u7ee7\u7eed\u547d\u4ee4",
+        priority="high",
+        cooldown_s=0.5,
+    ),
+    "walk_forward_step": RobotCommand(
+        command_id="walk_forward_step",
+        reply_on_match="\u5df2\u8bc6\u522b\u5411\u524d\u8d70\u4e00\u6b65\u547d\u4ee4",
+        duration_s=0.5,
+        cooldown_s=1.0,
+        params={"lin_x": 0.15},
+    ),
+    "turn_left_small": RobotCommand(
+        command_id="turn_left_small",
+        reply_on_match="\u5df2\u8bc6\u522b\u5de6\u8f6c\u4e00\u70b9\u547d\u4ee4",
+        duration_s=0.3,
+        cooldown_s=1.0,
+        params={"yaw": 1.0},
+    ),
+    "turn_right_small": RobotCommand(
+        command_id="turn_right_small",
+        reply_on_match="\u5df2\u8bc6\u522b\u53f3\u8f6c\u4e00\u70b9\u547d\u4ee4",
+        duration_s=0.3,
+        cooldown_s=1.0,
+        params={"yaw": -1.0},
+    ),
+    "turn_left_3s": RobotCommand(
+        command_id="turn_left_3s",
+        reply_on_match="\u5df2\u8bc6\u522b\u539f\u5730\u5de6\u8f6c\u547d\u4ee4",
+        duration_s=3.0,
+        cooldown_s=2.0,
+        params={"yaw": 1.0},
+    ),
+    "turn_right_3s": RobotCommand(
+        command_id="turn_right_3s",
+        reply_on_match="\u5df2\u8bc6\u522b\u539f\u5730\u53f3\u8f6c\u547d\u4ee4",
+        duration_s=3.0,
+        cooldown_s=2.0,
+        params={"yaw": -1.0},
+    ),
+    "strafe_left_step": RobotCommand(
+        command_id="strafe_left_step",
+        reply_on_match="\u5df2\u8bc6\u522b\u5411\u5de6\u8d70\u4e00\u6b65\u547d\u4ee4",
+        duration_s=0.5,
+        cooldown_s=1.0,
+        params={"lin_y": 0.2},
+    ),
+    "strafe_right_step": RobotCommand(
+        command_id="strafe_right_step",
+        reply_on_match="\u5df2\u8bc6\u522b\u5411\u53f3\u8d70\u4e00\u6b65\u547d\u4ee4",
+        duration_s=0.5,
+        cooldown_s=1.0,
+        params={"lin_y": -0.2},
+    ),
+    "head_pitch_up": RobotCommand(
+        command_id="head_pitch_up",
+        reply_on_match="\u5df2\u8bc6\u522b\u62ac\u5934\u547d\u4ee4",
+        duration_s=0.5,
+        cooldown_s=0.5,
+        params={"head_pitch": 0.3},
+    ),
+    "head_pitch_down": RobotCommand(
+        command_id="head_pitch_down",
+        reply_on_match="\u5df2\u8bc6\u522b\u4f4e\u5934\u547d\u4ee4",
+        duration_s=0.5,
+        cooldown_s=0.5,
+        params={"head_pitch": -0.78},
+    ),
+    "head_yaw_left": RobotCommand(
+        command_id="head_yaw_left",
+        reply_on_match="\u5df2\u8bc6\u522b\u770b\u5de6\u8fb9\u547d\u4ee4",
+        duration_s=0.5,
+        cooldown_s=0.5,
+        params={"head_yaw": 0.5},
+    ),
+    "head_yaw_right": RobotCommand(
+        command_id="head_yaw_right",
+        reply_on_match="\u5df2\u8bc6\u522b\u770b\u53f3\u8fb9\u547d\u4ee4",
+        duration_s=0.5,
+        cooldown_s=0.5,
+        params={"head_yaw": -0.5},
+    ),
+    "head_center": RobotCommand(
+        command_id="head_center",
+        reply_on_match="\u5df2\u8bc6\u522b\u5934\u56de\u6b63\u547d\u4ee4",
+        duration_s=0.5,
+        cooldown_s=0.5,
+        params={"neck_pitch": 0.0, "head_pitch": 0.0, "head_yaw": 0.0, "head_roll": 0.0},
+    ),
+}
+
+
+PHRASE_TO_COMMAND_ID: dict[str, str] = {
+    "\u505c\u6b62": "stop",
+    "\u505c\u4e0b": "stop",
+    "\u522b\u52a8": "stop",
+    "\u4e0d\u8981\u52a8": "stop",
+    "\u6682\u505c": "pause",
+    "\u5148\u6682\u505c": "pause",
+    "\u7ee7\u7eed": "resume",
+    "\u7ee7\u7eed\u8d70": "resume",
+    "\u5411\u524d\u8d70\u4e00\u6b65": "walk_forward_step",
+    "\u524d\u8fdb\u4e00\u6b65": "walk_forward_step",
+    "\u5f80\u524d\u8d70\u4e00\u6b65": "walk_forward_step",
+    "\u5de6\u8f6c\u4e00\u70b9": "turn_left_small",
+    "\u5411\u5de6\u8f6c\u4e00\u70b9": "turn_left_small",
+    "\u53f3\u8f6c\u4e00\u70b9": "turn_right_small",
+    "\u5411\u53f3\u8f6c\u4e00\u70b9": "turn_right_small",
+    "\u539f\u5730\u5de6\u8f6c": "turn_left_3s",
+    "\u539f\u5730\u5de6\u8f6c\u4e00\u5708": "turn_left_3s",
+    "\u5de6\u8f6c\u4e00\u5708": "turn_left_3s",
+    "\u5411\u5de6\u8f6c\u4e00\u5708": "turn_left_3s",
+    "\u5de6\u8f6c\u4e09\u79d2": "turn_left_3s",
+    "\u5411\u5de6\u8f6c\u4e09\u79d2": "turn_left_3s",
+    "\u539f\u5730\u53f3\u8f6c": "turn_right_3s",
+    "\u539f\u5730\u53f3\u8f6c\u4e00\u5708": "turn_right_3s",
+    "\u53f3\u8f6c\u4e00\u5708": "turn_right_3s",
+    "\u5411\u53f3\u8f6c\u4e00\u5708": "turn_right_3s",
+    "\u53f3\u8f6c\u4e09\u79d2": "turn_right_3s",
+    "\u5411\u53f3\u8f6c\u4e09\u79d2": "turn_right_3s",
+    "\u5411\u5de6\u8d70\u4e00\u6b65": "strafe_left_step",
+    "\u5de6\u79fb\u4e00\u6b65": "strafe_left_step",
+    "\u5f80\u5de6\u8d70\u4e00\u6b65": "strafe_left_step",
+    "\u5411\u53f3\u8d70\u4e00\u6b65": "strafe_right_step",
+    "\u53f3\u79fb\u4e00\u6b65": "strafe_right_step",
+    "\u5f80\u53f3\u8d70\u4e00\u6b65": "strafe_right_step",
+    "\u62ac\u5934": "head_pitch_up",
+    "\u4f4e\u5934": "head_pitch_down",
+    "\u770b\u5de6\u8fb9": "head_yaw_left",
+    "\u5411\u5de6\u770b": "head_yaw_left",
+    "\u770b\u53f3\u8fb9": "head_yaw_right",
+    "\u5411\u53f3\u770b": "head_yaw_right",
+    "\u5934\u56de\u6b63": "head_center",
+    "\u8f6c\u5934\u56de\u6b63": "head_center",
+}
+
+
+CHINESE_NUMBERS = {
+    "\u4e00": 1,
+    "\u4e8c": 2,
+    "\u4e24": 2,
+    "\u4e09": 3,
+    "\u56db": 4,
+    "\u4e94": 5,
+    "\u516d": 6,
+    "\u4e03": 7,
+    "\u516b": 8,
+    "\u4e5d": 9,
+    "\u5341": 10,
+    "1": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
+    "7": 7,
+    "8": 8,
+    "9": 9,
+}
+
+MAX_FORWARD_STEPS = 5
+
+
+def normalize_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text).strip().lower()
+    punctuation_pattern = (
+        r"[\s,\.\!\?;:\"'\u3001\u3002\uff0c\uff01\uff1f\uff1b"
+        r"\uff1a\u201c\u201d\u2018\u2019]+"
+    )
+    return re.sub(punctuation_pattern, "", normalized)
+
+
+def match_robot_command(text: str) -> RobotCommand | None:
+    normalized = normalize_text(text)
+    steps_command = _match_forward_steps(normalized)
+    if steps_command is not None:
+        return steps_command
+
+    command_id = PHRASE_TO_COMMAND_ID.get(normalized)
+    if command_id is None:
+        return None
+    return COMMANDS[command_id]
+
+
+def _match_forward_steps(text: str) -> RobotCommand | None:
+    number_pattern = r"[\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u53411-9]"
+    match = re.fullmatch(rf"(?:\u5411|\u5f80)?\u524d(?:\u8d70|\u8fdb)({number_pattern})\u6b65", text)
+    if not match:
+        match = re.fullmatch(rf"\u524d\u8fdb({number_pattern})\u6b65", text)
+    if not match:
+        return None
+
+    steps = CHINESE_NUMBERS[match.group(1)]
+    if steps > MAX_FORWARD_STEPS:
+        return RobotCommand(
+            command_id="walk_forward_steps_over_limit",
+            reply_on_match="\u524d\u8fdb\u6b65\u6570\u8d85\u8fc7\u4e0a\u9650",
+            params={"steps": float(steps), "max_steps": float(MAX_FORWARD_STEPS)},
+        )
+
+    return RobotCommand(
+        command_id="walk_forward_steps",
+        reply_on_match=f"\u5df2\u8bc6\u522b\u5411\u524d\u8d70{steps}\u6b65\u547d\u4ee4",
+        duration_s=steps * 0.5,
+        cooldown_s=1.0,
+        params={"lin_x": 0.15, "steps": float(steps)},
+    )

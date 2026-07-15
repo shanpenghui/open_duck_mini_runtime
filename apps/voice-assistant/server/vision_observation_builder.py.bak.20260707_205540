@@ -1,0 +1,526 @@
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from server.realsense_depth_tool import DEFAULT_DEPTH_SCALE, navigation_dry_run
+
+
+TOOL_VERSION = "0.1"
+SOURCE = "vision-observation-builder"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DEVICE_MAP_PATH = PROJECT_ROOT / "data" / "vision" / "device_map.json"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "data" / "vision" / "observations"
+DEFAULT_LATEST_PATH = PROJECT_ROOT / "data" / "vision" / "observation_latest.json"
+DEFAULT_WIDTH = 640
+DEFAULT_HEIGHT = 480
+DEFAULT_FPS = 15
+
+
+def status(device_map_path: str | Path = DEFAULT_DEVICE_MAP_PATH) -> dict[str, Any]:
+    device_map, error = _load_device_map(device_map_path)
+    rgb_device = device_map.get("rgb_device") if isinstance(device_map, dict) else None
+    depth_device = device_map.get("depth_device") if isinstance(device_map, dict) else None
+    return {
+        "ok": error is None,
+        "source": SOURCE,
+        "tool_version": TOOL_VERSION,
+        "device_map_path": str(Path(device_map_path).expanduser()),
+        "device_map_loaded": error is None,
+        "device_map_error": error,
+        "camera": device_map.get("camera") if isinstance(device_map, dict) else None,
+        "rgb_device": rgb_device,
+        "rgb_device_exists": _device_exists(rgb_device),
+        "depth_device": depth_device,
+        "depth_device_exists": _device_exists(depth_device),
+        "depth_backend": device_map.get("depth_backend") if isinstance(device_map, dict) else None,
+        "default_latest_path": str(DEFAULT_LATEST_PATH),
+        "robot_action_executed": False,
+        "summary": _status_summary(device_map, error),
+    }
+
+
+def build_observation(
+    *,
+    device_map_path: str | Path = DEFAULT_DEVICE_MAP_PATH,
+    output_root: str | Path = DEFAULT_OUTPUT_ROOT,
+    latest_path: str | Path = DEFAULT_LATEST_PATH,
+    detect_backend: str = "none",
+    format_hint: str | None = None,
+) -> dict[str, Any]:
+    device_map, error = _load_device_map(device_map_path)
+    if error is not None:
+        payload = _base_payload(device_map={}, output_dir=None)
+        payload.update(
+            {
+                "ok": False,
+                "error": "device_map_read_failed",
+                "message": error,
+                "summary": f"视觉观察失败: device_map 读取失败: {error}",
+            }
+        )
+        return payload
+
+    run_dir = _new_observation_dir(output_root)
+    rgb_path = run_dir / "rgb.jpg"
+    depth_dir = run_dir / "depth"
+    annotated_path = run_dir / "annotated_rgb.jpg"
+
+    width = int(device_map.get("width") or DEFAULT_WIDTH)
+    height = int(device_map.get("height") or DEFAULT_HEIGHT)
+    fps = int(device_map.get("fps") or DEFAULT_FPS)
+    depth_scale = float(device_map.get("depth_scale") or DEFAULT_DEPTH_SCALE)
+    rgb_timeout_s = float(device_map.get("rgb_timeout_s") or 30)
+    depth_timeout_s = float(device_map.get("depth_timeout_s") or 20)
+
+    rgb = _capture_rgb(
+        output_path=rgb_path,
+        device=str(device_map.get("rgb_device") or ""),
+        width=width,
+        height=height,
+        timeout_s=rgb_timeout_s,
+    )
+    depth = _capture_depth(
+        output_dir=depth_dir,
+        device=str(device_map.get("depth_device") or "/dev/video0"),
+        backend=str(device_map.get("depth_backend") or "v4l2"),
+        width=width,
+        height=height,
+        fps=fps,
+        depth_scale=depth_scale,
+        timeout_s=depth_timeout_s,
+    )
+    _complete_depth_outputs(depth, depth_dir=depth_dir, depth_scale=depth_scale)
+
+    warnings: list[str] = []
+    detection = _run_detection(
+        image_path=rgb_path,
+        annotated_path=annotated_path,
+        backend=detect_backend,
+        timeout_s=90,
+    )
+    if detection.get("warning"):
+        warnings.append(str(detection["warning"]))
+
+    obstacle = depth.get("obstacle_summary") if isinstance(depth.get("obstacle_summary"), dict) else {}
+    dry_run = depth.get("navigation_dry_run") if isinstance(depth.get("navigation_dry_run"), dict) else {}
+    objects = detection.get("objects") if isinstance(detection.get("objects"), list) else []
+    annotated_image_path = detection.get("annotated_image_path")
+    safety_notes = _safety_notes(rgb=rgb, depth=depth, obstacle=obstacle, dry_run=dry_run, warnings=warnings)
+
+    payload = _base_payload(device_map=device_map, output_dir=run_dir)
+    payload.update(
+        {
+            "ok": rgb.get("ok") is True or depth.get("ok") is True,
+            "device_map_path": str(Path(device_map_path).expanduser()),
+            "rgb_ok": rgb.get("ok") is True,
+            "rgb_path": rgb.get("image_path") or str(rgb_path),
+            "rgb_width": rgb.get("width"),
+            "rgb_height": rgb.get("height"),
+            "rgb_error": None if rgb.get("ok") is True else rgb.get("error"),
+            "depth_ok": depth.get("ok") is True,
+            "depth_output_dir": depth.get("output_dir") or str(depth_dir),
+            "depth_raw_png": depth.get("depth_raw_png"),
+            "depth_vis_path": depth.get("depth_vis_png"),
+            "depth_m_npy": depth.get("depth_m_npy"),
+            "depth_error": None if depth.get("ok") is True else depth.get("error"),
+            "front_min_distance_m": obstacle.get("front_min_distance_m"),
+            "left_min_distance_m": obstacle.get("left_min_distance_m"),
+            "right_min_distance_m": obstacle.get("right_min_distance_m"),
+            "blocked": obstacle.get("blocked"),
+            "valid_depth_ratio": obstacle.get("valid_depth_ratio"),
+            "suggested_action": dry_run.get("suggested_action"),
+            "reason": dry_run.get("reason"),
+            "objects": objects,
+            "annotated_image_path": annotated_image_path,
+            "detection": detection,
+            "safety_notes": safety_notes,
+            "warnings": warnings,
+            "raw": {
+                "rgb": rgb,
+                "depth": depth,
+            },
+        }
+    )
+    payload["summary"] = _observation_summary(payload)
+
+    observation_path = run_dir / "vision_observation.json"
+    payload["observation_path"] = str(observation_path)
+    _write_json(observation_path, payload)
+    _write_json(Path(latest_path).expanduser(), payload)
+    return payload
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "status":
+        payload = status(device_map_path=args.device_map)
+    elif args.command == "build":
+        payload = build_observation(
+            device_map_path=args.device_map,
+            output_root=args.output_root,
+            latest_path=args.latest_path,
+            detect_backend=args.detect_backend,
+            format_hint=args.format,
+        )
+    else:
+        parser.error("missing command")
+
+    _print_payload(payload, output_format=args.format)
+    return 0 if payload.get("ok") is True or args.command == "status" else 1
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m server.vision_observation_builder",
+        description="Build a read-only local vision observation package for VLA context.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    status_parser = subparsers.add_parser("status", help="Check device_map and configured video devices.")
+    status_parser.add_argument("--device-map", default=str(DEFAULT_DEVICE_MAP_PATH))
+    _add_format_arg(status_parser)
+
+    build_parser = subparsers.add_parser("build", help="Capture RGB/depth and write one vision observation JSON.")
+    build_parser.add_argument("--device-map", default=str(DEFAULT_DEVICE_MAP_PATH))
+    build_parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
+    build_parser.add_argument("--latest-path", default=str(DEFAULT_LATEST_PATH))
+    build_parser.add_argument("--detect-backend", choices=("none", "onnx", "ncnn", "yolo"), default="none")
+    _add_format_arg(build_parser)
+    return parser
+
+
+def _add_format_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--format", choices=("json", "brief"), default="json")
+
+
+def _capture_rgb(*, output_path: Path, device: str, width: int, height: int, timeout_s: float) -> dict[str, Any]:
+    command = [
+        sys.executable,
+        "-m",
+        "server.realsense_camera_tool",
+        "capture",
+        "--output",
+        str(output_path),
+        "--width",
+        str(width),
+        "--height",
+        str(height),
+        "--warmup-frames",
+        "3",
+    ]
+    if device:
+        command.extend(["--device", device])
+    return _run_json_tool(command, timeout_s=timeout_s, timeout_error="rgb_timeout")
+
+
+def _capture_depth(
+    *,
+    output_dir: Path,
+    device: str,
+    backend: str,
+    width: int,
+    height: int,
+    fps: int,
+    depth_scale: float,
+    timeout_s: float,
+) -> dict[str, Any]:
+    command = [
+        sys.executable,
+        "-m",
+        "server.realsense_depth_tool",
+        "capture",
+        "--output-dir",
+        str(output_dir),
+        "--width",
+        str(width),
+        "--height",
+        str(height),
+        "--fps",
+        str(fps),
+        "--warmup-frames",
+        "3",
+        "--no-color",
+        "--backend",
+        backend,
+        "--device",
+        device,
+        "--depth-scale",
+        str(depth_scale),
+    ]
+    return _run_json_tool(command, timeout_s=timeout_s, timeout_error="depth_timeout")
+
+
+def _complete_depth_outputs(depth: dict[str, Any], *, depth_dir: Path, depth_scale: float) -> None:
+    if depth.get("ok") is not True:
+        return
+    summary = depth.get("obstacle_summary")
+    if isinstance(summary, dict) and not isinstance(depth.get("navigation_dry_run"), dict):
+        depth["navigation_dry_run"] = navigation_dry_run(summary)
+
+    depth_m_npy = depth.get("depth_m_npy")
+    if not depth.get("depth_vis_png") and depth_m_npy:
+        output_path = depth_dir / "depth_vis.png"
+        visual = _run_json_tool(
+            [
+                sys.executable,
+                "-m",
+                "server.realsense_depth_tool",
+                "visualize",
+                "--depth",
+                str(depth_m_npy),
+                "--output",
+                str(output_path),
+                "--depth-scale",
+                str(depth_scale),
+            ],
+            timeout_s=20,
+            timeout_error="depth_visualize_timeout",
+        )
+        if visual.get("ok") is True:
+            depth["depth_vis_png"] = visual.get("depth_vis_png")
+        else:
+            depth["depth_visualize_error"] = visual
+
+
+def _run_detection(*, image_path: Path, annotated_path: Path, backend: str, timeout_s: float) -> dict[str, Any]:
+    if backend == "none":
+        return {
+            "ok": True,
+            "backend": "none",
+            "objects": [],
+            "annotated_image_path": None,
+            "robot_action_executed": False,
+        }
+    if not image_path.is_file():
+        return {
+            "ok": False,
+            "backend": backend,
+            "objects": [],
+            "annotated_image_path": None,
+            "warning": "detection_skipped_rgb_unavailable",
+            "robot_action_executed": False,
+        }
+    payload = _run_json_tool(
+        [
+            sys.executable,
+            "-m",
+            "server.local_vision_pipeline",
+            "observe",
+            "--image",
+            str(image_path),
+            "--backend",
+            backend,
+            "--annotated-output",
+            str(annotated_path),
+        ],
+        timeout_s=timeout_s,
+        timeout_error=f"{backend}_detection_timeout",
+    )
+    detection = payload.get("detection") if isinstance(payload.get("detection"), dict) else payload
+    if detection.get("ok") is not True:
+        return {
+            "ok": False,
+            "backend": backend,
+            "objects": [],
+            "annotated_image_path": None,
+            "warning": f"detection_failed:{detection.get('error') or payload.get('error') or 'unknown'}",
+            "raw": payload,
+            "robot_action_executed": False,
+        }
+    return {
+        "ok": True,
+        "backend": backend,
+        "objects": detection.get("objects") if isinstance(detection.get("objects"), list) else [],
+        "annotated_image_path": detection.get("annotated_image_path"),
+        "raw": payload,
+        "robot_action_executed": False,
+    }
+
+
+def _run_json_tool(command: list[str], *, timeout_s: float, timeout_error: str) -> dict[str, Any]:
+    timeout_s = max(1.0, min(180.0, float(timeout_s)))
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(PROJECT_ROOT),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return _error(timeout_error, f"Tool timed out after {timeout_s:.1f}s.", command=command)
+    except Exception as exc:
+        return _error("tool_launch_failed", str(exc), command=command)
+
+    payload = _json_from_output(completed.stdout)
+    if payload is None:
+        return _error(
+            "tool_invalid_json",
+            (completed.stdout or completed.stderr or "")[-1000:],
+            returncode=completed.returncode,
+            command=command,
+        )
+    payload.setdefault("robot_action_executed", False)
+    if completed.returncode != 0 and payload.get("ok") is True:
+        payload["ok"] = False
+    if completed.stderr.strip():
+        payload["stderr"] = completed.stderr.strip()[-1000:]
+    return payload
+
+
+def _json_from_output(text: str) -> dict[str, Any] | None:
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start < 0 or end < start:
+            return None
+        try:
+            payload = json.loads(stripped[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _load_device_map(path: str | Path) -> tuple[dict[str, Any], str | None]:
+    resolved = Path(path).expanduser()
+    if not resolved.is_file():
+        return {}, f"not found: {resolved}"
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {}, str(exc)
+    if not isinstance(payload, dict):
+        return {}, "device_map root must be an object"
+    return payload, None
+
+
+def _new_observation_dir(output_root: str | Path) -> Path:
+    root = Path(output_root).expanduser()
+    run_dir = root / datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def _base_payload(*, device_map: dict[str, Any], output_dir: Path | None) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "source": SOURCE,
+        "tool_version": TOOL_VERSION,
+        "mode": "vision_observation",
+        "timestamp": _now_iso(),
+        "output_dir": str(output_dir) if output_dir is not None else None,
+        "device_map": device_map,
+        "robot_action_executed": False,
+    }
+
+
+def _safety_notes(
+    *,
+    rgb: dict[str, Any],
+    depth: dict[str, Any],
+    obstacle: dict[str, Any],
+    dry_run: dict[str, Any],
+    warnings: list[str],
+) -> list[str]:
+    notes: list[str] = []
+    if rgb.get("ok") is not True:
+        notes.append("rgb_unavailable")
+    if depth.get("ok") is not True:
+        notes.append("depth_unavailable")
+    if obstacle.get("blocked") is True:
+        notes.append("front_blocked")
+    front = _optional_float(obstacle.get("front_min_distance_m"))
+    if front is not None and front < 0.7:
+        notes.append(f"front_close:{front:.2f}m")
+    valid_ratio = _optional_float(obstacle.get("valid_depth_ratio"))
+    if valid_ratio is not None and valid_ratio < 0.2:
+        notes.append("depth_low_confidence")
+    if dry_run.get("suggested_action") == "hold_position":
+        notes.append("navigation_hold_position")
+    notes.extend(warnings)
+    return notes
+
+
+def _status_summary(device_map: dict[str, Any], error: str | None) -> str:
+    if error is not None:
+        return f"视觉设备映射不可用: {error}"
+    rgb = device_map.get("rgb_device")
+    depth = device_map.get("depth_device")
+    return f"视觉设备映射已读取: RGB={rgb}, depth={depth}, backend={device_map.get('depth_backend')}"
+
+
+def _observation_summary(payload: dict[str, Any]) -> str:
+    rgb = "ok" if payload.get("rgb_ok") else "fail"
+    depth = "ok" if payload.get("depth_ok") else "fail"
+    front = _format_float(payload.get("front_min_distance_m"), digits=2)
+    action = payload.get("suggested_action") or "unknown"
+    objects = len(payload.get("objects") if isinstance(payload.get("objects"), list) else [])
+    return f"视觉观察已生成: RGB={rgb}, depth={depth}, front={front}m, action={action}, objects={objects}"
+
+
+def _print_payload(payload: dict[str, Any], *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    print(str(payload.get("summary") or payload.get("message") or "OK"))
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _device_exists(device: Any) -> bool | None:
+    if not device:
+        return None
+    return Path(str(device)).exists()
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_float(value: Any, *, digits: int) -> str:
+    number = _optional_float(value)
+    if number is None:
+        return "unknown"
+    return f"{number:.{digits}f}"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _error(error: str, message: str, **extra: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "ok": False,
+        "source": SOURCE,
+        "error": error,
+        "message": message,
+        "timestamp": _now_iso(),
+        "robot_action_executed": False,
+    }
+    payload.update(extra)
+    return payload
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
