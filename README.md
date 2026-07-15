@@ -41,7 +41,7 @@ control_freq=50
 kp=22
 kd=0
 action_scale=0.2
-min_motor_voltage=6.5
+min_motor_voltage=6.3
 power_log_interval=1.0
 ```
 

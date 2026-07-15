@@ -3,10 +3,10 @@
     "imu_upside_down": false,
     "phase_frequency_factor_offset": 0.0,
     "expression_features": {
-        "eyes": false,
+        "eyes": true,
         "projector": false,
         "antennas": false,
-        "speaker": false,
+        "speaker": true,
         "microphone": false,
         "camera": false
     },

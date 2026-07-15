@@ -292,16 +292,6 @@ class RLWalk:
 
         return freq
 
-    def get_voice_gyro_z(self):
-        try:
-            imu_data = self.imu.get_data()
-            gyro = imu_data.get("gyro")
-            if gyro is None or len(gyro) < 3:
-                return None
-            return float(np.clip(gyro[2], -5.0, 5.0))
-        except Exception:
-            return None
-
     def run(self):
         i = 0
         try:
@@ -359,12 +349,10 @@ class RLWalk:
                     self.last_commands = np.zeros(7)
                     self.buttons = Buttons()
 
-                voice_gyro_z = self.get_voice_gyro_z()
                 self.last_commands, self.buttons = self.voice_overlay.apply(
                     self.last_commands,
                     self.buttons,
                     self.paused,
-                    gyro_z_rad_s=voice_gyro_z,
                 )
 
                 if self.buttons.A.triggered:
